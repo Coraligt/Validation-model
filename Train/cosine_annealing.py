@@ -2,7 +2,7 @@ import math
 import torch
 from torch.optim.lr_scheduler import _LRScheduler
 
-class CosineAnnealingScheduler(_LRScheduler):
+class CosineAnnealingLR(_LRScheduler):
     """
     PyTorch implementation of the CosineAnnealing scheduler from the original code.
     """
@@ -11,7 +11,7 @@ class CosineAnnealingScheduler(_LRScheduler):
         self.eta_max = eta_max
         self.eta_min = eta_min
         self.verbose = verbose
-        super(CosineAnnealingScheduler, self).__init__(optimizer, last_epoch)
+        super(CosineAnnealingLR, self).__init__(optimizer, last_epoch)
     
     def get_lr(self):
         if not self._get_lr_called_within_step:
