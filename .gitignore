@@ -26,6 +26,6 @@ __pycache__/
 *.npz
 
 # 数据文件（根据需要）
-*.csv
+# *.csv
 *.h5
 *.hdf5
