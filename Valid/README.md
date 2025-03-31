@@ -1,201 +1,149 @@
 # Semiconductor Device Leakage Detection Model
 
-This project implements a complete deep learning solution for detecting leakage in semiconductor devices. The model architecture is adapted from the original TinyML contest model, modified to fit the semiconductor data characteristics.
+This project implements a deep learning solution for detecting leakage in semiconductor devices. The model architecture is adapted from a 1D-CNN design originally used for cardiac signal classification, now modified to classify semiconductor device characteristics.
+
+## Project Overview
+
+- **Task**: Binary classification of semiconductor devices as leaky (1) or non-leaky (0)
+- **Input**: Time series data from semiconductor measurements (t, q values)
+- **Model**: 1D Convolutional Neural Network with MLP classifier head
+- **Performance Focus**: FB Score, Accuracy, Sensitivity, Specificity
 
 ## Project Structure
 
 ```
-├── dataset.py              # Dataset loading and processing
-├── model.py                # Model architecture definition
-├── swa.py                  # Stochastic Weight Averaging implementation
-├── utils.py                # Evaluation metrics and utility functions
-├── prepare_data.py         # Data preprocessing script
-├── train.py                # Model training script
-├── test.py                 # Model testing script
-└── main.py                 # Complete pipeline script
-```
-
-## Installation
-
-Ensure you have the following dependencies installed:
-
-```bash
-pip install torch numpy pandas matplotlib tqdm scikit-learn
+VALIDATION-MODEL/
+├── Valid/                     # Validation data directory
+│   ├── dataset_3/             # Original device CSV files
+│   └── indices/               # Preprocessed data and indices
+│       ├── preprocessed/      # Normalized data files
+│       ├── test_indices.csv   # Test set indices
+│       └── train_indices.csv  # Training set indices
+├── models/                    # Trained model directory (created by train.py)
+├── dataset.py                 # Dataset loading and preprocessing
+├── model.py                   # Model architecture definition
+├── swa.py                     # Stochastic Weight Averaging implementation
+├── utils.py                   # Metrics and utility functions
+├── train.py                   # Training script
+├── test.py                    # Testing and evaluation script
+├── main.py                    # Main pipeline script (simplified)
+└── README.md                  # This file
 ```
 
 ## Data Format
 
-Input data should be CSV files, each containing measurements from a semiconductor device, with the following format:
-- Filename format: `dev####_Y.csv`, where `####` is the device ID and `Y` is the label (0=non-leaky, 1=leaky)
-- Each file contains 1002 rows of data
-- Columns are: `t` (time), `v` (voltage), `q` (charge), `i` (current)
+- **Source Data**: ~30,000 CSV files representing individual semiconductor device measurements
+- **Filename Format**: `dev####_Y.csv` where `####` is a device ID and `Y` is the label (0=non-leaky, 1=leaky)
+- **File Content**: 1002 rows with columns for 't' (time), 'v' (voltage), 'q' (charge), 'i' (current)
+- **Features Used**: For the current implementation, only `t` and `q` columns are used
 
 ## Model Architecture
 
 The model uses a 1D-CNN + MLP architecture:
-1. One 1D convolutional layer (kernel_size=85, stride=32)
+1. One 1D convolutional layer (filters=3, kernel_size=85, stride=32) 
 2. Batch normalization
 3. ReLU activation
-4. Fully connected layers [20, 10]
+4. Fully connected layers (20 → 10 → 2)
 5. Output layer (2 classes: non-leaky/leaky)
 
 ## Usage
 
-### 1. Complete Pipeline
+### Training
 
-Run the complete pipeline (data preparation, training, and testing):
-
-```bash
-python main.py --data_dir ./dataset_3 --output_dir ./output
-```
-
-### 2. Data Preparation
-
-Prepare and analyze data only:
+The training script assumes preprocessed data and indices already exist in the `Valid/indices` directory:
 
 ```bash
-python prepare_data.py --data_dir ./dataset_3 --output_dir ./preprocessed_data
+python train.py --epochs 50 --batch_size 32 --use_swa --device cuda:0
 ```
 
-### 3. Model Training
+Optional arguments:
+```
+--data_dir        Directory containing preprocessed files (default: ./Valid/indices/preprocessed)
+--indices_dir     Directory containing index files (default: ./Valid/indices)
+--output_dir      Directory to save models (default: ./output/models)
+--model_type      Model type (default: 'default', options: 'default', 'small')
+--use_columns     Features to use (default: 't,q')
+--learning_rate   Learning rate (default: 0.0002)
+--scheduler       Learning rate scheduler (default: 'cosine', options: 'cosine', 'none')
+--use_swa         Enable Stochastic Weight Averaging for improved generalization
+--device          Computing device (default: 'cuda:0', options: 'cuda:0', 'cpu')
+```
 
-Train model using preprocessed data:
+### Testing
+
+Test a trained model on the validation set:
 
 ```bash
-python train.py --data_dir ./preprocessed_data/preprocessed --indices_dir ./preprocessed_data --output_dir ./model_output
+python test.py --model_path ./output/models/best_model_fb.pth --device cuda:0
 ```
 
-Enable Stochastic Weight Averaging (SWA):
-
-```bash
-python train.py --data_dir ./preprocessed_data/preprocessed --indices_dir ./preprocessed_data --output_dir ./model_output --use_swa
+Additional options:
 ```
-
-### 4. Model Testing
-
-Test a trained model:
-
-```bash
-python test.py --data_dir ./preprocessed_data/preprocessed --indices_dir ./preprocessed_data --model_path ./model_output/best_model_fb.pth --output_dir ./test_results
-```
-
-Analyze prediction errors:
-
-```bash
-python test.py --data_dir ./preprocessed_data/preprocessed --indices_dir ./preprocessed_data --model_path ./model_output/best_model_fb.pth --output_dir ./test_results --analyze_errors
-```
-
-## Command Line Arguments
-
-### Main Script (main.py)
-
-```
---data_dir              Directory containing original CSV files
---output_dir            Directory to save output files
---use_columns           Columns to use as features (default: 't,q')
---seq_length            Sequence length (default: 1002)
---model_type            Model type ('default' or 'small')
---epochs                Number of training epochs (default: 50)
---batch_size            Batch size (default: 32)
---learning_rate         Learning rate (default: 0.0002)
---use_swa               Enable Stochastic Weight Averaging
---skip_prepare          Skip data preparation
---skip_train            Skip training
---skip_test             Skip testing
---device                Device (e.g. 'cuda:0' or 'cpu')
-```
-
-### Training Script (train.py)
-
-```
---data_dir              Directory containing preprocessed CSV files
---indices_dir           Directory containing index files
---output_dir            Directory to save models
---use_columns           Columns to use as features
---seq_length            Sequence length
---model_type            Model type
---epochs                Number of training epochs
---batch_size            Batch size
---learning_rate         Learning rate
---min_lr                Minimum learning rate
---scheduler             Learning rate scheduler ('cosine' or 'none')
---use_time_reverse      Use time reversal data augmentation
---use_swa               Enable Stochastic Weight Averaging
---swa_start             Epoch to start SWA
---swa_freq              SWA update frequency
---swa_lr                SWA learning rate
---seed                  Random seed
---device                Device
---num_workers           Number of data loading workers
-```
-
-### Testing Script (test.py)
-
-```
---data_dir              Directory containing preprocessed CSV files
---indices_dir           Directory containing index files
---output_dir            Directory to save test results
---model_path            Model path
---use_columns           Columns to use as features
---seq_length            Sequence length
---model_type            Model type
---batch_size            Batch size
---analyze_errors        Analyze prediction errors
---model_summary         Print model summary
---device                Device
---num_workers           Number of data loading workers
+--analyze_errors  Generate detailed analysis of prediction errors
+--model_summary   Print model summary and architecture details
 ```
 
 ## Features
 
-1. **Data Processing**:
-   - Data normalization
-   - Data augmentation (signal flipping, Gaussian noise, optional time reversal)
-   - Device-level splitting (ensuring samples from the same device don't appear in both train and test sets)
-
-2. **Training Techniques**:
+1. **Advanced Training Techniques**:
    - Cosine annealing learning rate scheduling
    - Stochastic Weight Averaging (SWA)
-   - Early stopping and best model saving
+   - Signal-based data augmentation
 
-3. **Evaluation Metrics**:
-   - Accuracy, F1 score, FB score
-   - Sensitivity (recall), Specificity
-   - Precision, Negative Predictive Value
-   - ROC curve and AUC
-   - Confusion matrix visualization
+2. **Evaluation Metrics**:
+   - Standard metrics: Accuracy, F1 Score
+   - Domain-specific metrics: FB Score, Sensitivity, Specificity
+   - Visual analysis: Confusion matrix, ROC curve
 
-4. **Model Variants**:
-   - Standard model (consistent with original TinyML contest model)
-   - Small model (fewer parameters for resource-constrained scenarios)
+3. **Model Variants**:
+   - Default model: Matches the architecture of the original model
+   - Small model: Reduced parameter version for faster training
 
 ## Results
 
-After training, the following files will be saved in the output directory:
+After training, models and evaluation results will be saved in the output directory:
 
 ```
-models/
+output/models/
   ├── best_model_fb.pth      # Best model by FB score
   ├── best_model_acc.pth     # Best model by accuracy
   ├── swa_model.pth          # SWA model (if enabled)
   ├── final_model.pth        # Final model
-  └── history.json           # Training history
-
-test_results/
-  ├── confusion_matrix.png   # Confusion matrix visualization
-  ├── roc_curve.png          # ROC curve
-  ├── metrics.png            # Evaluation metrics chart
-  ├── metrics.json           # Detailed evaluation metrics
-  └── error_analysis/        # Error analysis (if enabled)
+  ├── history.json           # Training history
+  └── final_eval/            # Evaluation visualizations
 ```
 
-## Differences from Original Model
+## Implementation Details
 
-This project is based on the original TinyML contest model, with the following adjustments:
+### Data Preprocessing
+- MinMax scaling for `t` and `q` features
+- Device-level train/test splitting to prevent data leakage
+- Padding/truncation of sequences to uniform length (1002 points)
 
-1. Migrated from TensorFlow to PyTorch
-2. Adjusted input sequence length to 1002 (original was 1250)
-3. Maintained core architecture (1D-CNN + MLP)
-4. Implemented similar data augmentation strategies (signal flipping, noise addition)
-5. Implemented Stochastic Weight Averaging (SWA) and cosine annealing scheduling
-6. Added more detailed evaluation metrics and error analysis
+### Data Augmentation
+- Signal flipping (amplitude inversion)
+- Gaussian noise addition
+- Optional time reversal
+
+### Training Configuration
+- Optimizer: Adam
+- Loss function: CrossEntropyLoss
+- Batch size: 32 (default)
+- Learning rate: 0.0002 (default)
+
+### Evaluation
+- Primary metric: FB score (F-beta with beta=2)
+- Additional metrics: F1, Sensitivity, Specificity, BAC, Accuracy
+
+## Requirements
+
+- PyTorch (>= 1.7.0)
+- NumPy
+- Pandas
+- Matplotlib
+- tqdm
+- scikit-learn
+
+## Acknowledgments
+
+This project adapts the model architecture from the TinyML Contest, originally designed for cardiac signal classification, and applies it to semiconductor device leakage detection.

@@ -1,195 +1,283 @@
 import os
 import argparse
-import subprocess
-import torch
-import platform
+import json
 import time
-import sys
+from tqdm import tqdm
+import torch
+import torch.nn as nn
+import torch.optim as optim
+
+from model import get_model
+from dataset import get_dataloaders, get_default_transforms
+from swa import StochasticWeightAveraging, CosineAnnealingWarmRestarts, update_bn
+from utils import evaluate_model, visualize_results, set_seed
 
 
-def check_requirements():
-    """Check if required packages are installed"""
-    required_packages = {
-        'torch': 'PyTorch',
-        'numpy': 'NumPy',
-        'pandas': 'Pandas',
-        'matplotlib': 'Matplotlib',
-        'tqdm': 'tqdm',
-        'sklearn': 'Scikit-learn'
+def train_one_epoch(model, dataloader, criterion, optimizer, device):
+    """
+    Train model for one epoch on semiconductor data
+    
+    Args:
+        model (nn.Module): Model
+        dataloader (DataLoader): Training data loader
+        criterion: Loss function
+        optimizer: Optimizer
+        device: Device for training
+        
+    Returns:
+        tuple: (average loss, accuracy)
+    """
+    model.train()
+    running_loss = 0.0
+    correct = 0
+    total = 0
+    
+    # Create progress bar
+    pbar = tqdm(dataloader, desc="Training")
+    
+    for inputs, targets in pbar:
+        inputs, targets = inputs.to(device), targets.to(device)
+        
+        # Forward pass
+        outputs = model(inputs)
+        loss = criterion(outputs, targets)
+        
+        # Backward pass and optimize
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        
+        # Statistics
+        running_loss += loss.item() * inputs.size(0)
+        _, predicted = outputs.max(1)
+        total += targets.size(0)
+        correct += predicted.eq(targets).sum().item()
+        
+        # Update progress bar
+        pbar.set_postfix({
+            'loss': running_loss / total,
+            'acc': 100. * correct / total
+        })
+    
+    # Calculate average loss and accuracy
+    epoch_loss = running_loss / total
+    epoch_acc = 100. * correct / total
+    
+    return epoch_loss, epoch_acc
+
+
+def train_model(args):
+    """
+    Train semiconductor leakage detection model
+    
+    Args:
+        args: Command line arguments
+    """
+    start_time = time.time()
+    
+    # Create output directory
+    os.makedirs(args.output_dir, exist_ok=True)
+    
+    # Set random seed
+    set_seed(args.seed)
+    
+    # Set device
+    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+    
+    # Get data augmentation
+    transforms = get_default_transforms(use_time_reverse=args.use_time_reverse)
+    
+    # Get data loaders
+    train_loader, val_loader = get_dataloaders(
+        data_dir=args.data_dir,
+        indices_dir=args.indices_dir,
+        batch_size=args.batch_size,
+        use_columns=args.use_columns.split(','),
+        num_workers=args.num_workers,
+        train_transform=transforms['train'],
+        test_transform=transforms['test']
+    )
+    
+    # Create model
+    model = get_model(
+        model_type=args.model_type,
+        in_channels=len(args.use_columns.split(',')),
+        seq_length=args.seq_length
+    )
+    model = model.to(device)
+    
+    # Print model structure
+    print(model)
+    
+    # Loss function and optimizer
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
+    
+    # Learning rate scheduler
+    if args.scheduler == 'cosine':
+        scheduler = CosineAnnealingWarmRestarts(
+            optimizer,
+            T_0=args.epochs,
+            eta_min=args.min_lr
+        )
+    else:
+        scheduler = None
+    
+    # Stochastic Weight Averaging
+    if args.use_swa:
+        swa = StochasticWeightAveraging(
+            model=model,
+            swa_start=args.swa_start,
+            swa_freq=args.swa_freq,
+            swa_lr=args.swa_lr
+        )
+    else:
+        swa = None
+    
+    # Training history
+    history = {
+        'train_loss': [],
+        'train_acc': [],
+        'val_loss': [],
+        'val_acc': [],
+        'fb_score': []
     }
     
-    missing_packages = []
+    best_fb = 0.0
+    best_acc = 0.0
+    best_epoch = 0
     
-    for package, name in required_packages.items():
-        try:
-            __import__(package)
-        except ImportError:
-            missing_packages.append(package)
+    # Training loop
+    print(f"Starting training for {args.epochs} epochs...")
+    for epoch in range(args.epochs):
+        print(f"\nEpoch {epoch+1}/{args.epochs}")
+        
+        # Train one epoch
+        train_loss, train_acc = train_one_epoch(
+            model=model,
+            dataloader=train_loader,
+            criterion=criterion,
+            optimizer=optimizer,
+            device=device
+        )
+        
+        # Step scheduler
+        if scheduler is not None:
+            scheduler.step()
+        
+        # Update SWA if enabled
+        if swa is not None:
+            swa.update(optimizer, epoch)
+        
+        # Validate
+        val_metrics = evaluate_model(
+            model=model,
+            dataloader=val_loader,
+            device=device
+        )
+        
+        val_loss = criterion(
+            torch.tensor(val_metrics['probabilities']).float().to(device), 
+            torch.tensor(val_metrics['labels']).long().to(device)
+        ).item()
+        
+        val_acc = val_metrics['accuracy']
+        fb_score = val_metrics['fb_score']
+        
+        # Print metrics
+        print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%")
+        print(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%, FB Score: {fb_score:.4f}")
+        print(f"TP: {val_metrics['confusion_matrix'][0]}, FN: {val_metrics['confusion_matrix'][1]}, "
+              f"FP: {val_metrics['confusion_matrix'][2]}, TN: {val_metrics['confusion_matrix'][3]}")
+        
+        # Update history
+        history['train_loss'].append(train_loss)
+        history['train_acc'].append(train_acc)
+        history['val_loss'].append(val_loss)
+        history['val_acc'].append(val_acc)
+        history['fb_score'].append(fb_score)
+        
+        # Save best model based on FB score (the metric used in the original model)
+        if fb_score > best_fb:
+            best_fb = fb_score
+            best_epoch = epoch
+            torch.save(model.state_dict(), os.path.join(args.output_dir, 'best_model_fb.pth'))
+            print(f"New best model saved! (FB: {best_fb:.4f})")
+        
+        # Also save best model based on accuracy
+        if val_acc > best_acc:
+            best_acc = val_acc
+            torch.save(model.state_dict(), os.path.join(args.output_dir, 'best_model_acc.pth'))
+            print(f"New best accuracy model saved! (Acc: {best_acc:.2f}%)")
     
-    if missing_packages:
-        print("Missing required packages:")
-        for package in missing_packages:
-            print(f"  - {required_packages[package]} ({package})")
-        print("\nPlease install required packages with:")
-        print("pip install " + " ".join(missing_packages))
-        return False
+    # Apply SWA weights if enabled
+    if swa is not None:
+        print("\nApplying SWA weights...")
+        swa.finalize()
+        
+        # Update batch normalization layer statistics
+        print("Updating batch normalization statistics...")
+        update_bn(model, train_loader, device)
+        
+        # Validate with SWA weights
+        swa_metrics = evaluate_model(
+            model=model,
+            dataloader=val_loader,
+            device=device
+        )
+        
+        print(f"SWA Val Acc: {swa_metrics['accuracy']:.2f}%")
+        print(f"SWA FB Score: {swa_metrics['fb_score']:.4f}")
+        
+        # Save SWA model
+        torch.save(model.state_dict(), os.path.join(args.output_dir, 'swa_model.pth'))
     
-    print("All required packages are installed")
-    return True
-
-
-def show_system_info():
-    """Display system information"""
-    print("\nSystem Information:")
-    print(f"Python version: {platform.python_version()}")
-    print(f"System: {platform.system()} {platform.release()}")
+    # Save final model
+    torch.save(model.state_dict(), os.path.join(args.output_dir, 'final_model.pth'))
     
-    if torch.cuda.is_available():
-        print(f"CUDA available: Yes (version {torch.version.cuda})")
-        print(f"GPU: {torch.cuda.get_device_name(0)}")
-        print(f"GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB")
-    else:
-        print("CUDA available: No")
+    # Save training history
+    with open(os.path.join(args.output_dir, 'history.json'), 'w') as f:
+        json.dump(history, f)
     
-    print(f"PyTorch version: {torch.__version__}")
-    print()
-
-
-def run_prepare_data(args):
-    """Run data preparation script for semiconductor data"""
-    print("\n" + "="*40)
-    print("Preparing Semiconductor Data")
-    print("="*40)
+    # Training complete
+    total_time = time.time() - start_time
+    minutes = int(total_time // 60)
+    seconds = int(total_time % 60)
     
-    cmd = [
-        sys.executable, "prepare_data.py",
-        "--data_dir", args.data_dir,
-        "--output_dir", args.output_dir
-    ]
+    print(f"\nTraining completed in {minutes}m {seconds}s")
+    print(f"Best FB score: {best_fb:.4f} at epoch {best_epoch+1}")
+    print(f"Best accuracy: {best_acc:.2f}%")
+    print(f"Model saved to: {args.output_dir}")
     
-    if args.analyze:
-        cmd.append("--analyze")
-    if args.preprocess:
-        cmd.append("--preprocess")
-    if args.normalize:
-        cmd.append("--normalize")
-    if args.create_indices:
-        cmd.append("--create_indices")
+    # Visualize final results
+    print("\nEvaluating final model...")
+    final_metrics = evaluate_model(
+        model=model,
+        dataloader=val_loader,
+        device=device
+    )
     
-    cmd.extend(["--test_ratio", str(args.test_ratio)])
-    cmd.extend(["--seed", str(args.seed)])
-    
-    subprocess.run(cmd)
-
-
-def run_train(args):
-    """Run training script for semiconductor leakage detection model"""
-    print("\n" + "="*40)
-    print("Training Semiconductor Leakage Detection Model")
-    print("="*40)
-    
-    cmd = [
-        sys.executable, "train.py",
-        "--data_dir", os.path.join(args.output_dir, "preprocessed"),
-        "--indices_dir", args.output_dir,
-        "--output_dir", os.path.join(args.output_dir, "models"),
-        "--use_columns", args.use_columns,
-        "--seq_length", str(args.seq_length),
-        "--model_type", args.model_type,
-        "--epochs", str(args.epochs),
-        "--batch_size", str(args.batch_size),
-        "--learning_rate", str(args.learning_rate),
-        "--min_lr", str(args.min_lr),
-        "--scheduler", args.scheduler,
-        "--seed", str(args.seed),
-        "--device", args.device,
-        "--num_workers", str(args.num_workers)
-    ]
-    
-    if args.use_time_reverse:
-        cmd.append("--use_time_reverse")
-    
-    if args.use_swa:
-        cmd.append("--use_swa")
-        cmd.extend(["--swa_start", str(args.swa_start)])
-        cmd.extend(["--swa_freq", str(args.swa_freq)])
-        cmd.extend(["--swa_lr", str(args.swa_lr)])
-    
-    subprocess.run(cmd)
-
-
-def run_test(args):
-    """Run testing script for semiconductor leakage detection model"""
-    print("\n" + "="*40)
-    print("Testing Semiconductor Leakage Detection Model")
-    print("="*40)
-    
-    # Find best model (prioritize FB score model)
-    model_dir = os.path.join(args.output_dir, "models")
-    model_path = os.path.join(model_dir, "best_model_fb.pth")
-    
-    # If FB score model doesn't exist, use best accuracy model
-    if not os.path.exists(model_path):
-        model_path = os.path.join(model_dir, "best_model_acc.pth")
-    
-    # If no best model, use SWA model
-    if not os.path.exists(model_path) and args.use_swa:
-        model_path = os.path.join(model_dir, "swa_model.pth")
-    
-    # If still no model, use final model
-    if not os.path.exists(model_path):
-        model_path = os.path.join(model_dir, "final_model.pth")
-    
-    if not os.path.exists(model_path):
-        print("No trained model found. Please run training first.")
-        return
-    
-    print(f"📂 Using model: {model_path}")
-    
-    cmd = [
-        sys.executable, "test.py",
-        "--data_dir", os.path.join(args.output_dir, "preprocessed"),
-        "--indices_dir", args.output_dir,
-        "--output_dir", os.path.join(args.output_dir, "test_results"),
-        "--model_path", model_path,
-        "--use_columns", args.use_columns,
-        "--seq_length", str(args.seq_length),
-        "--model_type", args.model_type,
-        "--batch_size", str(args.batch_size),
-        "--device", args.device,
-        "--num_workers", str(args.num_workers)
-    ]
-    
-    if args.analyze_errors:
-        cmd.append("--analyze_errors")
-    
-    subprocess.run(cmd)
+    visualize_results(
+        metrics=final_metrics,
+        output_dir=os.path.join(args.output_dir, 'final_eval')
+    )
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Semiconductor Leakage Detection Complete Pipeline')
+    parser = argparse.ArgumentParser(description='Train semiconductor leakage detection model')
     
     # Data parameters
-    parser.add_argument('--data_dir', type=str, default='./dataset_3',
-                        help='Directory containing original CSV files')
-    parser.add_argument('--output_dir', type=str, default='./output',
-                        help='Directory to save output files')
+    parser.add_argument('--data_dir', type=str, default='./Valid/indices/preprocessed',
+                        help='Directory containing preprocessed CSV files')
+    parser.add_argument('--indices_dir', type=str, default='./Valid/indices',
+                        help='Directory containing train and test indices files')
+    parser.add_argument('--output_dir', type=str, default='./output/models',
+                        help='Directory to save model checkpoints and logs')
     parser.add_argument('--use_columns', type=str, default='t,q',
                         help='Columns to use as features (comma separated)')
     parser.add_argument('--seq_length', type=int, default=1002,
-                        help='Sequence length (rows in each CSV file)')
-    
-    # Data preparation parameters
-    parser.add_argument('--analyze', action='store_true', default=True,
-                        help='Analyze dataset')
-    parser.add_argument('--preprocess', action='store_true', default=True,
-                        help='Preprocess dataset')
-    parser.add_argument('--normalize', action='store_true', default=True,
-                        help='Normalize features')
-    parser.add_argument('--create_indices', action='store_true', default=True,
-                        help='Create train and test indices files')
-    parser.add_argument('--test_ratio', type=float, default=0.15,
-                        help='Ratio of data to use for testing')
+                        help='Sequence length (number of rows in each CSV file)')
     
     # Model parameters
     parser.add_argument('--model_type', type=str, default='default', choices=['default', 'small'],
@@ -221,10 +309,6 @@ def main():
     parser.add_argument('--swa_lr', type=float, default=0.0001,
                         help='SWA learning rate')
     
-    # Test parameters
-    parser.add_argument('--analyze_errors', action='store_true',
-                        help='Analyze error predictions')
-    
     # Other parameters
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed')
@@ -233,49 +317,10 @@ def main():
     parser.add_argument('--num_workers', type=int, default=4,
                         help='Number of data loading workers')
     
-    # Flow control
-    parser.add_argument('--skip_prepare', action='store_true',
-                        help='Skip data preparation')
-    parser.add_argument('--skip_train', action='store_true',
-                        help='Skip training')
-    parser.add_argument('--skip_test', action='store_true',
-                        help='Skip testing')
-    parser.add_argument('--system_info', action='store_true',
-                        help='Display system information')
-    
     args = parser.parse_args()
     
-    # Check required packages
-    if not check_requirements():
-        return
-    
-    # Show system information
-    if args.system_info:
-        show_system_info()
-    
-    # Create output directory
-    os.makedirs(args.output_dir, exist_ok=True)
-    
-    start_time = time.time()
-    
-    # Run workflow
-    if not args.skip_prepare:
-        run_prepare_data(args)
-    
-    if not args.skip_train:
-        run_train(args)
-    
-    if not args.skip_test:
-        run_test(args)
-    
-    end_time = time.time()
-    duration = end_time - start_time
-    minutes = int(duration // 60)
-    seconds = int(duration % 60)
-    
-    print("\n" + "="*40)
-    print(f"Semiconductor Leakage Detection Pipeline Completed! Total time: {minutes}m {seconds}s")
-    print("="*40)
+    # Train the model
+    train_model(args)
 
 
 if __name__ == '__main__':
