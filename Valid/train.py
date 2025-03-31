@@ -268,9 +268,9 @@ def main():
     parser = argparse.ArgumentParser(description='Train semiconductor leakage detection model')
     
     # Data parameters
-    parser.add_argument('--data_dir', type=str, default='./preprocessed_data/preprocessed',
+    parser.add_argument('--data_dir', type=str, default='./Valid/dataset_3',
                         help='Directory containing preprocessed CSV files')
-    parser.add_argument('--indices_dir', type=str, default='./preprocessed_data',
+    parser.add_argument('--indices_dir', type=str, default='./Valid/indices',
                         help='Directory containing train and test indices files')
     parser.add_argument('--output_dir', type=str, default='./model_output',
                         help='Directory to save model checkpoints and logs')
