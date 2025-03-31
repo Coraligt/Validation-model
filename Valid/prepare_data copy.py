@@ -6,12 +6,12 @@ from tqdm import tqdm
 import argparse
 import re
 import csv
+import argparse
 import shutil
 import matplotlib.pyplot as plt
 import seaborn as sns
 from collections import Counter
 from sklearn.preprocessing import MinMaxScaler
-import pickle
 
 def analyze_dataset(data_dir, output_dir):
     """
@@ -41,7 +41,7 @@ def analyze_dataset(data_dir, output_dir):
     # Get all device files and analyze
     file_paths = glob.glob(os.path.join(data_dir, 'dev*_*.csv'))
     
-    # Analyze the original dataset
+    # Analyze the original dataset_3
     for filepath in tqdm(file_paths, desc="Analyzing all files"): 
         filename = os.path.basename(filepath)
         match = pattern.match(filename)
@@ -81,6 +81,7 @@ def analyze_dataset(data_dir, output_dir):
 
     # Print summary
     print(f"Total files: {total_files}")
+    print(f"Columns in {filepath}: {df.columns.tolist()}")  # Print columns of the last file processed
     print(f"Leaky files: {leaky_count} ({100 * leaky_count / total_files:.2f}%)")
     print(f"Non-leaky files: {non_leaky_count} ({100 * non_leaky_count / total_files:.2f}%)")
     print(f"Average number of rows: {avg_rows:.2f}")
@@ -101,6 +102,7 @@ def analyze_dataset(data_dir, output_dir):
         f.write(f"v range: [{v_min} to {v_max}]\n")
         f.write(f"q range: [{q_min} to {q_max}]\n")
         f.write(f"i range: [{i_min} to {i_max}]\n")
+
 
     # Visualize distributions
     plt.figure(figsize=(12, 6))
@@ -170,6 +172,114 @@ def analyze_dataset(data_dir, output_dir):
     print(f"Analysis completed. Results saved to {output_dir}")
 
 
+def preprocess_dataset(data_dir, output_dir, normalize=True):
+    """
+    Preprocess the dataset and save the processed files
+    
+    Args:
+        data_dir (str): Directory containing CSV files
+        output_dir (str): Directory to save processed files
+        normalize (bool): Whether to normalize the features
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    
+    print(f"Preprocessing dataset in {data_dir}...")
+
+    pattern  = re.compile(r'dev(\d+)_(\d)\.csv') # dev#_label.csv
+    
+    # Get all test data files
+    file_paths = glob.glob(os.path.join(data_dir, 'dev*_*.csv'))
+
+    if normalize:
+         # Initialize scalers for each column
+        t_scaler = MinMaxScaler()
+        v_scaler = MinMaxScaler()
+        q_scaler = MinMaxScaler()
+        i_scaler = MinMaxScaler()
+        
+        # Collect data for fitting scalers
+        t_data = []
+        v_data = []
+        q_data = []
+        i_data = []
+
+        #sample_size = min(1000, len(file_paths)) # Do not exceed 1000 samples
+        #sample_files = np.random.choice(file_paths, sample_size, replace=False)
+        sample_files = file_paths  # Use all files for normalization
+
+        for filepath in tqdm(file_paths, desc="Analyzing all files"):  # Analyze all files
+            filename = os.path.basename(filepath)
+            match = pattern.match(filename)
+        
+        for filepath in tqdm(sample_files, desc="Collecting data for normalization"):
+            try:
+                df = pd.read_csv(filepath, names=['t', 'v', 'q', 'i'], header=None)
+
+                if 't' in df.columns:
+                    t_data.append(df['t'].values)
+                if 'v' in df.columns:
+                    v_data.append(df['v'].values)
+                if 'q' in df.columns:
+                    q_data.append(df['q'].values)
+                if 'i' in df.columns:
+                    i_data.append(df['i'].values)
+            except Exception as e:
+                print(f"Error processing {filepath} for normalization: {e}")
+        
+        # Fit scalers
+        if t_data:
+            t_scaler.fit(np.concatenate(t_data).reshape(-1, 1))
+        if v_data:
+            v_scaler.fit(np.concatenate(v_data).reshape(-1, 1))
+        if q_data:
+            q_scaler.fit(np.concatenate(q_data).reshape(-1, 1))
+        if i_data:
+            i_scaler.fit(np.concatenate(i_data).reshape(-1, 1))
+    
+    # Process all files
+    for filepath in tqdm(file_paths, desc="Preprocessing files"):
+        filename = os.path.basename(filepath)
+        match = pattern.match(filename)
+        
+        if match:
+            try:
+                # Read CSV
+                df = pd.read_csv(filepath, names=['t', 'v', 'q', 'i'], header=None)
+
+                # Normalize if requested
+                if normalize:
+                    if 't' in df.columns:
+                        df['t'] = t_scaler.transform(df['t'].values.reshape(-1, 1)).flatten()
+                    if 'v' in df.columns:
+                        df['v'] = v_scaler.transform(df['v'].values.reshape(-1, 1)).flatten()
+                    if 'q' in df.columns:
+                        df['q'] = q_scaler.transform(df['q'].values.reshape(-1, 1)).flatten()
+                    if 'i' in df.columns:
+                        df['i'] = i_scaler.transform(df['i'].values.reshape(-1, 1)).flatten()
+                
+                # Save to output directory
+                output_filepath = os.path.join(output_dir, filename)
+                df.to_csv(output_filepath, index=False)
+            except Exception as e:
+                print(f"Error preprocessing {filepath}: {e}")
+    
+    # Save scalers for future use
+    if normalize:
+        import pickle
+        
+        scalers = {
+            't': t_scaler,
+            'v': v_scaler,
+            'q': q_scaler,
+            'i': i_scaler
+        }
+        
+        with open(os.path.join(output_dir, 'scalers.pkl'), 'wb') as f:
+            pickle.dump(scalers, f)
+    
+    print(f"Preprocessing completed. Files saved to {output_dir}")
+
+
 def create_indices_files(data_dir, output_dir, test_ratio=0.15, random_state=42):
     """
     Create indices files for training and testing
@@ -184,10 +294,7 @@ def create_indices_files(data_dir, output_dir, test_ratio=0.15, random_state=42)
     
     print(f"Creating indices files in {data_dir}...")
 
-    pattern = re.compile(r'dev(\d+)_(\d)\.csv')  # dev#_label.csv
-    
-    # Set random seed for reproducibility
-    np.random.seed(random_state)
+    pattern  = re.compile(r'dev(\d+)_(\d)\.csv') # dev#_label.csv
     
     # Get all device files
     files_info = []
@@ -198,14 +305,14 @@ def create_indices_files(data_dir, output_dir, test_ratio=0.15, random_state=42)
         if match:
             device_id = int(match.group(1))
             label = int(match.group(2))
-            files_info.append((filename, device_id, label))
+            files_info.append((filepath, device_id, label))
 
     # Group by device_id to ensure all files for a device are in the same set
     devices = {}
-    for filename, device_id, label in files_info:
+    for filepath, device_id, label in files_info:
         if device_id not in devices:
             devices[device_id] = []
-        devices[device_id].append((filename, label))
+        devices[device_id].append((filepath, label))
 
     # Split into train and test sets
     device_ids = list(devices.keys())
@@ -219,15 +326,15 @@ def create_indices_files(data_dir, output_dir, test_ratio=0.15, random_state=42)
     test_files = []
 
     for device_id in train_device_ids:
-        for filename, label in devices[device_id]:
-            train_files.append((label, filename))
+        for filepath, label in devices[device_id]:
+            train_files.append((filepath, label))
 
     for device_id in test_device_ids:
-        for filename, label in devices[device_id]:
-            test_files.append((label, filename))
+        for filepath, label in devices[device_id]:
+            test_files.append((filepath, label))
 
-    train_labels = [label for label, _ in train_files]
-    test_labels = [label for label, _ in test_files]
+    train_labels = [label for _, label in train_files]
+    test_labels = [label for _, label in test_files]
 
     train_counter = Counter(train_labels)
     test_counter = Counter(test_labels)
@@ -242,104 +349,16 @@ def create_indices_files(data_dir, output_dir, test_ratio=0.15, random_state=42)
     with open(os.path.join(output_dir, 'train_indices.csv'), 'w', newline='') as f:
         writer = csv.writer(f)
         writer.writerow(['label', 'Filename'])  # header
-        for label, filename in train_files:
-            writer.writerow([label, filename])
+        for filepath, label in train_files:
+            writer.writerow([label, os.path.basename(filepath)])
 
     with open(os.path.join(output_dir, 'test_indices.csv'), 'w', newline='') as f:
         writer = csv.writer(f)
         writer.writerow(['label', 'Filename']) 
-        for label, filename in test_files:
-            writer.writerow([label, filename])  
+        for filepath, label in test_files:
+            writer.writerow([label, os.path.basename(filepath)])  
     
     print(f"Indices files created in {output_dir}")
-
-
-def preprocess_dataset(data_dir, output_dir, train_indices_file, use_columns=['t', 'q']):
-    """
-    Preprocess the dataset with proper normalization
-    
-    Args:
-        data_dir (str): Directory containing original CSV files
-        output_dir (str): Directory to save preprocessed files
-        train_indices_file (str): Path to train indices CSV file
-        use_columns (list): Columns to use as features
-    """
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # Load train indices to fit scalers only on training data
-    train_files = []
-    with open(train_indices_file, 'r') as f:
-        reader = csv.reader(f)
-        next(reader)  # Skip header
-        for row in reader:
-            if len(row) >= 2:
-                label, filename = int(row[0]), row[1]
-                train_files.append(filename)
-    
-    print(f"Will fit scalers on {len(train_files)} training files")
-    
-    # Initialize scalers for each column
-    scalers = {column: MinMaxScaler() for column in use_columns}
-    
-    # First pass: collect data from training set to fit scalers
-    print("Collecting data from training set to fit scalers...")
-    for column in use_columns:
-        column_data = []
-        
-        for filename in tqdm(train_files, desc=f"Processing {column} column"):
-            try:
-                # Read CSV file
-                filepath = os.path.join(data_dir, filename)
-                df = pd.read_csv(filepath, header=None)
-                
-                # If we have 4 columns, assume they are t, v, q, i
-                if len(df.columns) >= 4:
-                    df.columns = ['t', 'v', 'q', 'i'][:len(df.columns)]
-                
-                # If column exists, add data to list
-                if column in df.columns:
-                    column_data.append(df[column].values)
-            except Exception as e:
-                print(f"Error reading {filepath}: {e}")
-        
-        # Combine all data for this column and fit scaler
-        if column_data:
-            combined_data = np.concatenate(column_data).reshape(-1, 1)
-            scalers[column].fit(combined_data)
-            print(f"Fitted scaler for {column}: min={scalers[column].data_min_[0]}, max={scalers[column].data_max_[0]}")
-    
-    # Save scalers for future use
-    with open(os.path.join(output_dir, 'scalers.pkl'), 'wb') as f:
-        pickle.dump(scalers, f)
-    
-    # Second pass: transform all files (both train and test) 
-    # Get all files
-    all_files = glob.glob(os.path.join(data_dir, 'dev*_*.csv'))
-    
-    print(f"Transforming {len(all_files)} files with fitted scalers...")
-    for filepath in tqdm(all_files, desc="Transforming files"):
-        try:
-            filename = os.path.basename(filepath)
-            
-            # Read CSV file
-            df = pd.read_csv(filepath, header=None)
-            
-            # If we have 4 columns, assume they are t, v, q, i
-            if len(df.columns) >= 4:
-                df.columns = ['t', 'v', 'q', 'i'][:len(df.columns)]
-            
-            # Transform each column with its scaler
-            for column in use_columns:
-                if column in df.columns:
-                    df[column] = scalers[column].transform(df[column].values.reshape(-1, 1))
-            
-            # Save transformed file
-            output_path = os.path.join(output_dir, filename)
-            df.to_csv(output_path, index=False, header=False)
-        except Exception as e:
-            print(f"Error processing {filepath}: {e}")
-    
-    print(f"Preprocessing completed. Files saved to {output_dir}")
 
 
 def main():
@@ -353,31 +372,22 @@ def main():
                         help='Analyze the dataset')
     parser.add_argument('--preprocess', action='store_true', default=True,
                         help='Preprocess the dataset')
+    parser.add_argument('--normalize', action='store_true', default=True,
+                        help='Normalize the features during preprocessing')
     parser.add_argument('--create_indices', action='store_true', default=True,
                         help='Create train and test indices files')
     parser.add_argument('--test_ratio', type=float, default=0.15,
                         help='Ratio of data to use for testing')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed')
-    parser.add_argument('--use_columns', type=str, default='t,q',
-                        help='Columns to use (comma-separated)')
     
     args = parser.parse_args()
     
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
-    
-    # Parse columns to use
-    use_columns = args.use_columns.split(',')
-    
-    # Create train/test indices first
-    if args.create_indices:
-        create_indices_files(
-            args.data_dir,
-            args.output_dir,
-            args.test_ratio,
-            args.seed
-        )
+
+    # Create output directory
+    os.makedirs(args.output_dir, exist_ok=True)
     
     # Analyze the dataset
     if args.analyze:
@@ -386,21 +396,25 @@ def main():
     
     # Preprocess the dataset
     if args.preprocess:
-        preprocessed_dir = os.path.join(args.output_dir, 'preprocessed')
-        train_indices_file = os.path.join(args.output_dir, 'train_indices.csv')
-        
-        # Check if train indices file exists
-        if not os.path.exists(train_indices_file):
-            print(f"Error: Train indices file {train_indices_file} not found. Run with --create_indices first.")
-            return
-        
-        preprocess_dataset(
-            args.data_dir,
-            preprocessed_dir,
-            train_indices_file,
-            use_columns
+        preprocess_dir = os.path.join(args.output_dir, 'preprocessed')
+        preprocess_dataset(args.data_dir, preprocess_dir, args.normalize)
+    
+    # Create indices files
+    if args.create_indices:
+        indices_dir = os.path.join(args.output_dir)
+        data_source = os.path.join(args.output_dir, 'preprocessed') if (args.preprocess and args.normalize and 
+            os.path.exists(os.path.join(args.output_dir, 'preprocessed'))) else args.data_dir
+            
+        create_indices_files(
+            data_source,
+            indices_dir, 
+            args.test_ratio, 
+            args.seed
         )
 
 
 if __name__ == '__main__':
-    main()
+    main() 
+
+   
+

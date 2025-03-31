@@ -18,28 +18,25 @@ class Conv1DMLP(nn.Module):
         """
         super(Conv1DMLP, self).__init__()
         
-        # First layer: Conv1D with same parameters as original model
-        self.conv1 = nn.Conv1d(in_channels=in_channels, 
-                              out_channels=3, 
-                              kernel_size=85, 
-                              stride=32, 
-                              padding=0)
-        
-        # Batch normalization
-        self.bn1 = nn.BatchNorm1d(3)
+        # make it deeper
+        self.conv1 = nn.Conv1d(in_channels, 16, kernel_size=41, stride=4, padding=20)
+        self.bn1 = nn.BatchNorm1d(16)
+        self.conv2 = nn.Conv1d(16, 32, kernel_size=21, stride=2, padding=10)
+        self.bn2 = nn.BatchNorm1d(32)
         
         # Calculate size after convolution
-        # size = (seq_length - kernel_size) / stride + 1
-        # For seq_length=1002, kernel_size=85, stride=32: size = (1002 - 85) / 32 + 1 = 29.28 -> 29
-        conv_output_size = ((seq_length - 85) // 32) + 1
-        self.conv_output_size = conv_output_size * 3  # 3 filters * output size
+        conv1_size = (seq_length + 2*20 - 41) // 4 + 1  # ~251
+        conv2_size = (conv1_size + 2*10 - 21) // 2 + 1  # ~125
         
-        # Fully connected layers (same as original model)
-        self.fc1 = nn.Linear(self.conv_output_size, 20)
+        self.flatten_size = conv2_size * 32
+        
+        # Fully connected layers
+        self.fc1 = nn.Linear(self.flatten_size, 64)
         self.dropout1 = nn.Dropout(0.3)
-        self.fc2 = nn.Linear(20, 10)
-        self.dropout2 = nn.Dropout(0.1)
-        self.fc3 = nn.Linear(10, 2)  # Binary classification: non-leaky/leaky
+        self.fc2 = nn.Linear(64, 32)
+        self.dropout2 = nn.Dropout(0.2)
+        self.fc3 = nn.Linear(32, 2) # Binary classification - leaky or non-leaky
+        
         
     def forward(self, x):
         """
@@ -52,9 +49,8 @@ class Conv1DMLP(nn.Module):
             torch.Tensor: Output tensor [batch_size, 2]
         """
         # Convolutional layer
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = F.relu(x)
+        x = F.relu(self.bn1(self.conv1(x)))
+        x = F.relu(self.bn2(self.conv2(x)))
         
         # Flatten
         x = x.view(x.size(0), -1)
@@ -92,7 +88,7 @@ class SmallConv1DMLP(nn.Module):
         # Simplified fully connected layers
         self.fc1 = nn.Linear(self.conv_output_size, 10)
         self.dropout1 = nn.Dropout(0.3)
-        self.fc2 = nn.Linear(10, 2)  # Binary classification
+        self.fc2 = nn.Linear(10, 2)  # Binary classification - leaky or non-leaky
         
     def forward(self, x):
         # Convolutional layer
