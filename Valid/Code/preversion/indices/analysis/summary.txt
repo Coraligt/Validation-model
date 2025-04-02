@@ -1,0 +1,9 @@
+Total files: 30000
+Leaky files: 15405 (51.35%) 
+Non-leaky files: 14595 (48.65%)
+Average number of rows: 1002.00
+Min rows: 1002, Max rows: 1002
+t range: [0.0 to 0.0001001]
+v range: [-61.674 to 60.991]
+q range: [-84.1 to 367.16]
+i range: [-18235000.0 to 18255000.0]
