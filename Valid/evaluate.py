@@ -212,7 +212,15 @@ def main():
     
     # Load model
     logger.info(f"Loading model from {args.model_path}")
-    model = SemiconductorModel(seq_length=args.seq_length).to(device)
+    # model = SemiconductorModel(seq_length=args.seq_length).to(device)
+    model = SemiconductorModel(
+        seq_length=args.seq_length,
+        conv_filters=3,  # Match the values from your tuning output
+        fc1_size=80,     # Use the values you see in your tuning logs
+        fc2_size=20,
+        dropout1=0.3,
+        dropout2=0.2
+    ).to(device)
     model.load_state_dict(torch.load(args.model_path, map_location=device))
     
     # Get data loader
