@@ -9,10 +9,14 @@ from sklearn.metrics import roc_curve, precision_recall_curve, auc, confusion_ma
 from tqdm import tqdm
 import logging
 from datetime import datetime
+import sys
+import traceback
 
 from model import SemiconductorModel
 from dataset import get_dataloaders, get_transforms
 from utils import set_seed, stats_report, ACC, PPV, NPV, Sensitivity, Specificity, BAC, F1, FB
+
+print("Starting evaluation script")
 
 def setup_logging(output_dir, log_file=None):
     """Setup logging configuration"""
@@ -43,128 +47,135 @@ def setup_logging(output_dir, log_file=None):
     logging.info(f"Logging to {log_file}")
     return logging.getLogger()
 
-def evaluate_model(model, data_loader, device, criterion=None):
+def detect_model_architecture(model_path, device='cpu'):
     """
-    Comprehensive model evaluation
+    Inspect a saved model to determine its architecture
     
     Args:
-        model: PyTorch model
-        data_loader: DataLoader with test data
-        device: Device to run evaluation on
-        criterion: Loss function (optional)
+        model_path: Path to the model file
+        device: Device to load the model on
     
     Returns:
-        Dictionary with evaluation metrics
+        Dictionary with model architecture parameters
     """
+    # Load the state dict
+    state_dict = torch.load(model_path, map_location=device)
+    
+    # Determine architecture from state dict keys and shapes
+    architecture = {}
+    
+    # Get convolutional layer filters
+    if 'conv1.weight' in state_dict:
+        architecture['conv_filters'] = state_dict['conv1.weight'].shape[0]
+    else:
+        architecture['conv_filters'] = 3  # default
+    
+    # Get fully connected layer sizes
+    if 'fc1.weight' in state_dict:
+        architecture['fc1_size'] = state_dict['fc1.weight'].shape[0]
+    else:
+        architecture['fc1_size'] = 20  # default
+    
+    if 'fc2.weight' in state_dict:
+        architecture['fc2_size'] = state_dict['fc2.weight'].shape[0]
+    else:
+        architecture['fc2_size'] = 10  # default
+    
+    # Use default dropout rates as they don't affect model loading
+    architecture['dropout1'] = 0.3
+    architecture['dropout2'] = 0.1
+    
+    # Use default sequence length
+    architecture['seq_length'] = 1002
+    
+    return architecture
+
+def evaluate_model(model, data_loader, criterion, device):
+    """Evaluate model on data loader and return metrics"""
+    print("Running evaluate_model function...")
     model.eval()
-    all_preds = []
-    all_labels = []
-    all_outputs = []
-    total_loss = 0.0
+    correct = 0
+    total = 0
+    eval_loss = 0.0
+    
+    # Initialize confusion matrix counters
+    segs_TP = 0
+    segs_TN = 0
+    segs_FP = 0
+    segs_FN = 0
     
     with torch.no_grad():
         for inputs, labels in tqdm(data_loader, desc="Evaluation"):
             inputs, labels = inputs.to(device), labels.to(device)
+            
+            # Forward pass
             outputs = model(inputs)
-            
-            if criterion is not None:
-                loss = criterion(outputs, labels)
-                total_loss += loss.item() * inputs.size(0)
-            
-            # Store raw outputs (before softmax) for ROC curve
-            all_outputs.append(outputs.cpu().numpy())
-            
-            # Get predicted class
+            loss = criterion(outputs, labels)
+            eval_loss += loss.item() * inputs.size(0)
             _, predicted = torch.max(outputs, 1)
             
-            # Store predictions and labels
-            all_preds.extend(predicted.cpu().numpy())
-            all_labels.extend(labels.cpu().numpy())
-    
-    # Convert to numpy arrays
-    all_preds = np.array(all_preds)
-    all_labels = np.array(all_labels)
-    all_outputs = np.concatenate(all_outputs, axis=0)
-    
-    # Calculate softmax probabilities
-    softmax_outputs = torch.nn.functional.softmax(torch.tensor(all_outputs), dim=1).numpy()
-    pos_probs = softmax_outputs[:, 1]  # Probability of positive class (leaky)
-    
-    # Confusion matrix [TP, FN, FP, TN]
-    tn, fp, fn, tp = confusion_matrix(all_labels, all_preds, labels=[0, 1]).ravel()
-    cm = [tp, fn, fp, tn]
+            # Update counters
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+            
+            # Update confusion matrix
+            for p, l in zip(predicted, labels):
+                if l.item() == 0:  # Non-leaky (negative class)
+                    if p.item() == 0:
+                        segs_TN += 1
+                    else:
+                        segs_FP += 1
+                else:  # Leaky (positive class)
+                    if p.item() == 1:
+                        segs_TP += 1
+                    else:
+                        segs_FN += 1
     
     # Calculate metrics
-    metrics = {
-        'accuracy': ACC(cm),
-        'precision': PPV(cm),
-        'recall': Sensitivity(cm),
-        'specificity': Specificity(cm),
-        'npv': NPV(cm),
-        'balanced_accuracy': BAC(cm),
-        'f1': F1(cm),
-        'fb': FB(cm),
-        'confusion_matrix': cm,
-        'predictions': all_preds,
-        'labels': all_labels,
-        'probabilities': pos_probs
-    }
+    avg_loss = eval_loss / len(data_loader.dataset)
+    acc = 100.0 * correct / total
+    cm = [segs_TP, segs_FN, segs_FP, segs_TN]
     
-    # Calculate loss if criterion provided
-    if criterion is not None:
-        metrics['loss'] = total_loss / len(data_loader.dataset)
-    
-    return metrics
+    return avg_loss, acc, cm
 
-def plot_roc_curve(labels, probabilities, output_dir):
-    """
-    Plot ROC curve
+def plot_confusion_matrix(cm, output_dir):
+    """Plot confusion matrix"""
+    tp, fn, fp, tn = cm
     
-    Args:
-        labels: True labels
-        probabilities: Predicted probabilities for positive class
-        output_dir: Directory to save the plot
-    """
-    fpr, tpr, _ = roc_curve(labels, probabilities)
-    roc_auc = auc(fpr, tpr)
+    # Reshape to 2x2 matrix for visualization
+    cm_matrix = np.array([[tn, fp], [fn, tp]])
     
     plt.figure(figsize=(10, 8))
-    plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (area = {roc_auc:.3f})')
-    plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
-    plt.xlim([0.0, 1.0])
-    plt.ylim([0.0, 1.05])
-    plt.xlabel('False Positive Rate')
-    plt.ylabel('True Positive Rate')
-    plt.title('Receiver Operating Characteristic (ROC) Curve')
-    plt.legend(loc="lower right")
-    plt.savefig(os.path.join(output_dir, 'roc_curve.png'))
-    plt.close()
-
-def plot_precision_recall_curve(labels, probabilities, output_dir):
-    """
-    Plot Precision-Recall curve
+    plt.imshow(cm_matrix, interpolation='nearest', cmap=plt.cm.Blues)
+    plt.title('Confusion Matrix')
+    plt.colorbar()
     
-    Args:
-        labels: True labels
-        probabilities: Predicted probabilities for positive class
-        output_dir: Directory to save the plot
-    """
-    precision, recall, _ = precision_recall_curve(labels, probabilities)
-    pr_auc = auc(recall, precision)
+    classes = ['Non-leaky (0)', 'Leaky (1)']
+    tick_marks = np.arange(len(classes))
+    plt.xticks(tick_marks, classes, rotation=45)
+    plt.yticks(tick_marks, classes)
     
-    plt.figure(figsize=(10, 8))
-    plt.plot(recall, precision, color='blue', lw=2, label=f'PR curve (area = {pr_auc:.3f})')
-    plt.xlim([0.0, 1.0])
-    plt.ylim([0.0, 1.05])
-    plt.xlabel('Recall')
-    plt.ylabel('Precision')
-    plt.title('Precision-Recall Curve')
-    plt.legend(loc="lower left")
-    plt.savefig(os.path.join(output_dir, 'precision_recall_curve.png'))
+    # Add text annotations
+    fmt = 'd'
+    thresh = cm_matrix.max() / 2.
+    for i in range(cm_matrix.shape[0]):
+        for j in range(cm_matrix.shape[1]):
+            plt.text(j, i, format(cm_matrix[i, j], fmt),
+                     ha="center", va="center",
+                     color="white" if cm_matrix[i, j] > thresh else "black")
+    
+    plt.tight_layout()
+    plt.ylabel('True Label')
+    plt.xlabel('Predicted Label')
+    
+    # Save the figure
+    save_path = os.path.join(output_dir, 'confusion_matrix.png')
+    plt.savefig(save_path)
     plt.close()
+    print(f"Confusion matrix saved to {save_path}")
 
 def main():
-    """Main evaluation function"""
+    print("Parsing arguments...")
     parser = argparse.ArgumentParser(description='Evaluate a semiconductor leakage detection model')
     
     # Data parameters
@@ -197,115 +208,203 @@ def main():
     parser.add_argument('--log_file', type=str, default=None,
                        help='Path to save the log file')
     
+    # Verbose output
+    parser.add_argument('--verbose', action='store_true',
+                        help='Enable verbose output')
+    
     args = parser.parse_args()
+    print(f"Arguments parsed: {args}")
     
-    # Setup output directory and logging
-    os.makedirs(args.output_dir, exist_ok=True)
-    logger = setup_logging(args.output_dir, args.log_file)
-    
-    # Set random seed
-    set_seed(args.seed)
-    
-    # Set device
-    device = torch.device(args.device if torch.cuda.is_available() and not args.no_cuda else "cpu")
-    logger.info(f"Using device: {device}")
-    
-    # Load model
-    logger.info(f"Loading model from {args.model_path}")
-    # model = SemiconductorModel(seq_length=args.seq_length).to(device)
-    model = SemiconductorModel(
-        seq_length=args.seq_length,
-        conv_filters=3,  # Match the values from your tuning output
-        fc1_size=80,     # Use the values you see in your tuning logs
-        fc2_size=20,
-        dropout1=0.3,
-        dropout2=0.2
-    ).to(device)
-    model.load_state_dict(torch.load(args.model_path, map_location=device))
-    
-    # Get data loader
-    _, test_loader = get_dataloaders(
-        data_dir=args.data_dir,
-        indices_dir=args.indices_dir,
-        batch_size=args.batch_size,
-        num_workers=args.workers,
-        transforms=None  # No transforms for evaluation
-    )
-    
-    # Evaluate model
-    logger.info("Starting evaluation...")
-    start_time = time.time()
-    
-    criterion = nn.CrossEntropyLoss()
-    metrics = evaluate_model(model, test_loader, device, criterion)
-    
-    evaluation_time = time.time() - start_time
-    logger.info(f"Evaluation completed in {evaluation_time:.2f} seconds")
-    
-    # Log metrics
-    tp, fn, fp, tn = metrics['confusion_matrix']
-    logger.info(f"Test Loss: {metrics.get('loss', 'N/A')}")
-    logger.info(f"Accuracy: {metrics['accuracy']:.4f}")
-    logger.info(f"Precision (PPV): {metrics['precision']:.4f}")
-    logger.info(f"Recall (Sensitivity): {metrics['recall']:.4f}")
-    logger.info(f"Specificity: {metrics['specificity']:.4f}")
-    logger.info(f"Negative Predictive Value (NPV): {metrics['npv']:.4f}")
-    logger.info(f"Balanced Accuracy: {metrics['balanced_accuracy']:.4f}")
-    logger.info(f"F1 Score: {metrics['f1']:.4f}")
-    logger.info(f"FB Score: {metrics['fb']:.4f}")
-    logger.info(f"Confusion Matrix: TP={tp}, FN={fn}, FP={fp}, TN={tn}")
-    
-    # Create visualizations
-    logger.info("Creating visualizations...")
-    plot_roc_curve(metrics['labels'], metrics['probabilities'], args.output_dir)
-    plot_precision_recall_curve(metrics['labels'], metrics['probabilities'], args.output_dir)
-    plot_confusion_matrix(metrics['confusion_matrix'], args.output_dir)
-    
-    # Save detailed results to CSV
-    import pandas as pd
-    results_df = pd.DataFrame({
-        'true_label': metrics['labels'],
-        'predicted_label': metrics['predictions'],
-        'probability': metrics['probabilities']
-    })
-    results_df.to_csv(os.path.join(args.output_dir, 'evaluation_results.csv'), index=False)
-    
-    logger.info(f"Evaluation results saved to {args.output_dir}")
+    try:
+        # Create output directory
+        print(f"Creating output directory: {args.output_dir}")
+        os.makedirs(args.output_dir, exist_ok=True)
+        
+        # Setup logging
+        logger = setup_logging(args.output_dir, args.log_file)
+        logger.info("Starting evaluation")
+        
+        # Log all arguments
+        logger.info("Arguments:")
+        for arg, value in vars(args).items():
+            logger.info(f"  {arg}: {value}")
+        
+        # Set random seed
+        print(f"Setting random seed: {args.seed}")
+        set_seed(args.seed)
+        logger.info(f"Random seed set to {args.seed}")
+        
+        # Set device
+        if args.no_cuda or not torch.cuda.is_available():
+            device = torch.device("cpu")
+            print("Using CPU for evaluation")
+            logger.info("Using CPU for evaluation")
+        else:
+            device = torch.device(args.device)
+            print(f"Using device: {device}")
+            logger.info(f"Using device: {device}")
+        
+        # Check if model file exists
+        if not os.path.exists(args.model_path):
+            err_msg = f"Model file not found: {args.model_path}"
+            print(err_msg)
+            logger.error(err_msg)
+            raise FileNotFoundError(err_msg)
+        
+        # Create model
+        print("Creating model...")
+        logger.info("Creating model...")
+        
+        # # To match the model architecture with what was used during training
+        # model = SemiconductorModel(
+        #     seq_length=args.seq_length,
+        #     conv_filters=3,  # Default values
+        #     fc1_size=20,
+        #     fc2_size=10,
+        #     dropout1=0.3,
+        #     dropout2=0.1
+        # ).to(device)
+        
+        # Detect architecture from saved model
+        print(f"Detecting architecture from {args.model_path}...")
+        logger.info(f"Detecting architecture from {args.model_path}...")
+        architecture = detect_model_architecture(args.model_path, device)
 
-def plot_confusion_matrix(cm, output_dir):
-    """
-    Plot confusion matrix
-    
-    Args:
-        cm: Confusion matrix [TP, FN, FP, TN]
-        output_dir: Directory to save the plot
-    """
-    tp, fn, fp, tn = cm
-    
-    # Reshape to 2x2 matrix for visualization
-    cm_matrix = np.array([[tn, fp], [fn, tp]])
-    
-    plt.figure(figsize=(10, 8))
-    plt.imshow(cm_matrix, interpolation='nearest', cmap=plt.cm.Blues)
-    plt.title('Confusion Matrix')
-    plt.colorbar()
-    
-    classes = ['Non-leaky (0)', 'Leaky (1)']
-    tick_marks = np.arange(len(classes))
-    plt.xticks(tick_marks, classes, rotation=45)
-    plt.yticks(tick_marks, classes)
-    
-    # Add text annotations
-    fmt = 'd'
-    thresh = cm_matrix.max() / 2.
-    for i in range(cm_matrix.shape[0]):
-        for j in range(cm_matrix.shape[1]):
-            plt.text(j, i, format(cm_matrix[i, j], fmt),
-                     ha="center", va="center",
-                     color="white" if cm_matrix[i, j] > thresh else "black")
-    
-    plt.tight_layout()
-    plt.ylabel('True Label')
-    plt.xlabel('Predicted Label')
-    plt.savefig(os.path.join(output_dir, 'confusion_matrix.png'))
-    plt.close()
+        print(f"Detected architecture: {architecture}")
+        logger.info(f"Detected architecture: {architecture}")
+
+        # Create model with detected architecture
+        model = SemiconductorModel(
+            seq_length=architecture['seq_length'],
+            conv_filters=architecture['conv_filters'],
+            fc1_size=architecture['fc1_size'],
+            fc2_size=architecture['fc2_size'],
+            dropout1=architecture['dropout1'],
+            dropout2=architecture['dropout2']
+        ).to(device)
+
+        logger.info(f"Model created with {sum(p.numel() for p in model.parameters() if p.requires_grad)} parameters")
+        
+        # Load model weights
+        print(f"Loading model from {args.model_path}")
+        logger.info(f"Loading model from {args.model_path}")
+        
+        try:
+            model.load_state_dict(torch.load(args.model_path, map_location=device))
+            print("Model loaded successfully")
+            logger.info("Model loaded successfully")
+        except Exception as e:
+            err_msg = f"Failed to load model: {str(e)}"
+            print(err_msg)
+            logger.error(err_msg)
+            raise
+        
+        # Get data loader
+        print("Creating data loaders...")
+        logger.info("Creating data loaders...")
+        
+        # Check if directories exist
+        if not os.path.exists(args.data_dir):
+            err_msg = f"Data directory not found: {args.data_dir}"
+            print(err_msg)
+            logger.error(err_msg)
+            raise FileNotFoundError(err_msg)
+        
+        if not os.path.exists(args.indices_dir):
+            err_msg = f"Indices directory not found: {args.indices_dir}"
+            print(err_msg)
+            logger.error(err_msg)
+            raise FileNotFoundError(err_msg)
+        
+        try:
+            # Get data loaders without transforms for evaluation
+            loaders = get_dataloaders(
+                data_dir=args.data_dir,
+                indices_dir=args.indices_dir,
+                batch_size=args.batch_size,
+                num_workers=args.workers,
+                transforms=None  # No transforms for evaluation
+            )
+            
+            print("Data loaders created")
+            logger.info("Data loaders created")
+            
+            # Determine which loader to use for evaluation
+            if len(loaders) == 3:
+                _, _, test_loader = loaders
+                print("Using test loader from train/val/test split")
+                logger.info("Using test loader from train/val/test split")
+            else:
+                _, test_loader = loaders
+                print("Using test loader from train/test split")
+                logger.info("Using test loader from train/test split")
+            
+        except Exception as e:
+            err_msg = f"Failed to create data loaders: {str(e)}"
+            print(err_msg)
+            logger.error(err_msg)
+            raise
+        
+        # Loss function for evaluation
+        criterion = nn.CrossEntropyLoss()
+        
+        # Start timer for evaluation
+        print("Starting evaluation...")
+        logger.info("Starting evaluation...")
+        eval_start_time = time.time()
+        
+        # Evaluate loaded model
+        test_loss, test_acc, cm = evaluate_model(model, test_loader, criterion, device)
+        fb = stats_report(cm)
+        
+        eval_time = time.time() - eval_start_time
+        
+        # Log results
+        logger.info(f"Evaluation completed in {eval_time:.2f} seconds")
+        logger.info(f"Test Loss: {test_loss:.4f}")
+        logger.info(f"Test Accuracy: {test_acc:.2f}%")
+        logger.info(f"FB Score: {fb:.4f}")
+        logger.info(f"Confusion Matrix: TP={cm[0]}, FN={cm[1]}, FP={cm[2]}, TN={cm[3]}")
+        
+        # Print results to console
+        print(f"Evaluation completed in {eval_time:.2f} seconds")
+        print(f"Test Loss: {test_loss:.4f}")
+        print(f"Test Accuracy: {test_acc:.2f}%")
+        print(f"FB Score: {fb:.4f}")
+        print(f"Confusion Matrix: TP={cm[0]}, FN={cm[1]}, FP={cm[2]}, TN={cm[3]}")
+        
+        # Create visualization
+        print("Creating visualization...")
+        logger.info("Creating visualization...")
+        plot_confusion_matrix(cm, args.output_dir)
+        
+        # Save results to CSV
+        print("Saving detailed results...")
+        import pandas as pd
+        
+        # Create a summary results file
+        results_summary = {
+            'metric': ['Loss', 'Accuracy', 'FB Score', 'TP', 'FN', 'FP', 'TN'],
+            'value': [test_loss, test_acc, fb, cm[0], cm[1], cm[2], cm[3]]
+        }
+        summary_df = pd.DataFrame(results_summary)
+        summary_df.to_csv(os.path.join(args.output_dir, 'evaluation_summary.csv'), index=False)
+        
+        print(f"Evaluation results saved to {args.output_dir}")
+        logger.info(f"Evaluation results saved to {args.output_dir}")
+        
+    except Exception as e:
+        print(f"Error during evaluation: {str(e)}")
+        if 'logger' in locals():
+            logger.error(f"Error during evaluation: {str(e)}")
+            logger.error(traceback.format_exc())
+        traceback.print_exc()
+        sys.exit(1)
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        print(f"Uncaught exception: {str(e)}")
+        traceback.print_exc()
+        sys.exit(1)

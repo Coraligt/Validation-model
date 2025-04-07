@@ -120,15 +120,31 @@ class Compose:
             x = t(x)
         return x
 
-def get_transforms(use_time_reverse=False):
+# def get_transforms(use_time_reverse=False):
+#     """Get data transforms for training and testing"""
+#     train_transforms = [
+#         FlipSignal(p=0.5),
+#         AddGaussianNoise(std_factor=0.05, p=0.5)
+#     ]
+    
+#     if use_time_reverse:
+#         train_transforms.append(TimeReverse(p=0.5))
+    
+#     return {
+#         'train': Compose(train_transforms),
+#         'val': None,  # No transforms for validation data
+#         'test': None  # No transforms for test data
+#     }
+
+def get_transforms(use_time_reverse=False, flip_prob=0.5, noise_prob=0.5, noise_factor=0.05):
     """Get data transforms for training and testing"""
     train_transforms = [
-        FlipSignal(p=0.5),
-        AddGaussianNoise(std_factor=0.05, p=0.5)
+        FlipSignal(p=flip_prob),
+        AddGaussianNoise(std_factor=noise_factor, p=noise_prob)
     ]
     
     if use_time_reverse:
-        train_transforms.append(TimeReverse(p=0.5))
+        train_transforms.append(TimeReverse(p=flip_prob))
     
     return {
         'train': Compose(train_transforms),
