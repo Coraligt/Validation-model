@@ -14,7 +14,7 @@ import numpy as np
 from datetime import datetime
 import matplotlib.pyplot as plt
 
-from model import SemiconductorModel, count_parameters, save_for_inference
+from model import SemiconductorModel, BaselineSemiconductorModel, count_parameters, save_for_inference
 from dataset import get_dataloaders, get_transforms
 from utils import set_seed, stats_report
 from swa import SWA
@@ -103,15 +103,20 @@ def setup_model_and_optimizer(args, device, logger):
     """Create and initialize model and optimizer"""
     # Create model
     logger.info("Creating model...")
-    model = SemiconductorModel(
-        seq_length=args.seq_length,
-        conv_filters=args.conv_filters,
-        fc1_size=args.fc1_size,
-        fc2_size=args.fc2_size,
-        dropout1=args.dropout1,
-        dropout2=args.dropout2
-    ).to(device)
-    
+    if args.model_type == 'baseline':
+        model = BaselineSemiconductorModel(seq_length=args.seq_length).to(device)
+        logger.info("Using baseline model (multi-layer CNN)")
+    else:
+        model = SemiconductorModel(
+            seq_length=args.seq_length,
+            conv_filters=args.conv_filters,
+            fc1_size=args.fc1_size,
+            fc2_size=args.fc2_size,
+            dropout1=args.dropout1,
+            dropout2=args.dropout2
+        ).to(device)
+        logger.info("Using improved model (single-layer CNN)")
+
     logger.info(f"Model architecture:\n{str(model)}")
     logger.info(f"Total trainable parameters: {count_parameters(model):,}")
     
@@ -796,6 +801,11 @@ def main():
     # Flag for baseline model
     parser.add_argument('--train_baseline', action='store_true',
                        help='Train only a baseline model with no augmentation and no SWA')
+    
+    # Add to the argument parser section:
+    parser.add_argument('--model_type', type=str, default='improved', 
+                        choices=['baseline', 'improved'],
+                        help='Model architecture to use (baseline or improved)')
     
     args = parser.parse_args()
     

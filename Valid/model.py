@@ -117,3 +117,80 @@ def save_for_inference(model, path, input_shape=(1, 1, 1002)):
         print(f"ONNX model saved to {onnx_path}")
     except Exception as e:
         print(f"Error saving ONNX model: {e}")
+
+    
+class BaselineSemiconductorModel(nn.Module):
+    """
+    Baseline model with multiple Conv1D layers based on GATECH-EIC LAB's TinyML contest model
+    """
+    def __init__(self, seq_length=1002):
+        super(BaselineSemiconductorModel, self).__init__()
+        
+        # First conv block
+        self.conv1 = nn.Conv1d(1, 3, kernel_size=6, stride=1, padding=2)
+        self.bn1 = nn.BatchNorm1d(3)
+        
+        # Second conv block
+        self.conv2 = nn.Conv1d(3, 5, kernel_size=5, stride=1, padding=2)
+        self.bn2 = nn.BatchNorm1d(5)
+        
+        # Third conv block
+        self.conv3 = nn.Conv1d(5, 10, kernel_size=4, stride=1, padding=1)
+        self.bn3 = nn.BatchNorm1d(10)
+        
+        # Fourth conv block
+        self.conv4 = nn.Conv1d(10, 20, kernel_size=4, stride=1, padding=1)
+        self.bn4 = nn.BatchNorm1d(20)
+        
+        # Fifth conv block
+        self.conv5 = nn.Conv1d(20, 20, kernel_size=4, stride=1, padding=1)
+        self.bn5 = nn.BatchNorm1d(20)
+        
+        # Calculate output size after 5 conv layers with padding
+        # This will need adjustment based on exact padding and stride
+        self.output_size = seq_length
+        for _ in range(5):
+            # Approximate size change per layer
+            self.output_size = self.output_size // 1  # No change due to padding
+        
+        # Final feature size
+        self.flatten_size = 20 * self.output_size
+        
+        # Fully connected layers
+        self.fc1 = nn.Linear(self.flatten_size, 10)
+        self.fc2 = nn.Linear(10, 2)  # Binary classification
+        
+    def forward(self, x):
+        # First conv block
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = F.relu(x)
+        
+        # Second conv block
+        x = self.conv2(x)
+        x = self.bn2(x)
+        x = F.relu(x)
+        
+        # Third conv block
+        x = self.conv3(x)
+        x = self.bn3(x)
+        x = F.relu(x)
+        
+        # Fourth conv block
+        x = self.conv4(x)
+        x = self.bn4(x)
+        x = F.relu(x)
+        
+        # Fifth conv block
+        x = self.conv5(x)
+        x = self.bn5(x)
+        x = F.relu(x)
+        
+        # Flatten
+        x = x.view(x.size(0), -1)
+        
+        # Fully connected layers
+        x = F.relu(self.fc1(x))
+        x = self.fc2(x)
+        
+        return x

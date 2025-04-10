@@ -19,6 +19,7 @@ Valid/
 ├── evaluation_results/  # Model evaluation output
 ├── indices/             # Train/validation/test splits
 │   └── preprocessed/    # Normalized data
+│   └── analysis/        # Dataset analysis results
 ├── model_output/        # Trained models and results
 │   ├── run_0/
 │   ├── run_1/
@@ -145,16 +146,17 @@ This script will:
 
 The training pipeline includes several options:
 
-### Basic Training
+Baseline Model: Multi-layer CNN inspired by the original TinyML design
+Improved Model: Single-layer CNN with large kernel (more efficient)
 
+Train with various optimization techniques:
+# Train baseline model
 ```bash
-python Valid/main.py --data_dir ./Valid/dataset_3 --output_dir ./Valid --model_dir ./Valid/model_output
-```
-
-### Advanced Training with Multiple Runs and Model Selection
-
+python Valid/trainselect.py --model_type baseline --data_dir ./processed_data/preprocessed --indices_dir ./processed_data --output_dir ./model_output/baseline
+``` 
+# Train improved model with SWA or data augmentation with Multiple Runs and Model Selection
 ```bash
-python Valid/trainselect.py --data_dir ./Valid/indices/preprocessed --indices_dir ./Valid/indices --output_dir ./Valid/model_output --num_runs 5 --use_swa
+python Valid/trainselect.py --model_type improved --use_swa --do_augmentation --data_dir ./processed_data/preprocessed --indices_dir ./processed_data --output_dir ./model_output/improved --num_runs 5
 ```
 
 Important parameters:
