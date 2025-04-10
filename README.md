@@ -8,7 +8,6 @@ This project implements a 1D CNN architecture to detect leakage in semiconductor
 
 ## Project Structure
 
-
 ```
 Training/ Original model from EIC LAB fro IEGM classification
 Train/ Original model of PyTorch version for IEGM classification
