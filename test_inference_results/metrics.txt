@@ -1,0 +1,14 @@
+Performance Metrics:
+Accuracy: 0.9580
+Precision: 0.9320
+Recall/Sensitivity: 0.9914
+Specificity: 0.9219
+F1 Score: 0.9608
+F-Beta Score (β=2): 0.9789
+Balanced Accuracy: 0.9567
+
+Confusion Matrix:
+True Positives (TP): 2315
+False Negatives (FN): 20
+False Positives (FP): 169
+True Negatives (TN): 1996
