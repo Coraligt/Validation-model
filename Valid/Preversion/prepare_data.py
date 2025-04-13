@@ -8,7 +8,6 @@ import re
 import csv
 import shutil
 import matplotlib.pyplot as plt
-import seaborn as sns
 from collections import Counter
 from sklearn.preprocessing import MinMaxScaler
 import pickle
@@ -170,13 +169,14 @@ def analyze_dataset(data_dir, output_dir):
     print(f"Analysis completed. Results saved to {output_dir}")
 
 
-def create_indices_files(data_dir, output_dir, test_ratio=0.15, random_state=42):
+def create_indices_files(data_dir, output_dir, val_ratio=0.15, test_ratio=0.15, random_state=42):
     """
-    Create indices files for training and testing
+    Create indices files for training, validation and testing
     
     Args:
         data_dir (str): Directory containing CSV files
         output_dir (str): Directory to save indices files
+        val_ratio (float): Ratio of validation data
         test_ratio (float): Ratio of test data
         random_state (int): Random seed for reproducibility
     """
@@ -207,35 +207,48 @@ def create_indices_files(data_dir, output_dir, test_ratio=0.15, random_state=42)
             devices[device_id] = []
         devices[device_id].append((filename, label))
 
-    # Split into train and test sets
+    # Split into train, validation and test sets
     device_ids = list(devices.keys())
     np.random.shuffle(device_ids)
+    
     test_size = int(len(device_ids) * test_ratio)
+    val_size = int(len(device_ids) * val_ratio)
+    
     test_device_ids = device_ids[:test_size]
-    train_device_ids = device_ids[test_size:]
+    val_device_ids = device_ids[test_size:test_size+val_size]
+    train_device_ids = device_ids[test_size+val_size:]
 
     # Create indices files
     train_files = []
+    val_files = []
     test_files = []
 
     for device_id in train_device_ids:
         for filename, label in devices[device_id]:
             train_files.append((label, filename))
 
+    for device_id in val_device_ids:
+        for filename, label in devices[device_id]:
+            val_files.append((label, filename))
+
     for device_id in test_device_ids:
         for filename, label in devices[device_id]:
             test_files.append((label, filename))
 
     train_labels = [label for label, _ in train_files]
+    val_labels = [label for label, _ in val_files]
     test_labels = [label for label, _ in test_files]
 
     train_counter = Counter(train_labels)
+    val_counter = Counter(val_labels)
     test_counter = Counter(test_labels)
 
     print(f"Train set size: {len(train_files)} files from {len(train_device_ids)} devices")
+    print(f"Validation set size: {len(val_files)} files from {len(val_device_ids)} devices")
     print(f"Test set size: {len(test_files)} files from {len(test_device_ids)} devices")
 
     print(f"Train set: {train_counter[0]} non-leaky, {train_counter[1]} leaky")
+    print(f"Validation set: {val_counter[0]} non-leaky, {val_counter[1]} leaky")
     print(f"Test set: {test_counter[0]} non-leaky, {test_counter[1]} leaky")
 
     # Write indices to files
@@ -243,6 +256,12 @@ def create_indices_files(data_dir, output_dir, test_ratio=0.15, random_state=42)
         writer = csv.writer(f)
         writer.writerow(['label', 'Filename'])  # header
         for label, filename in train_files:
+            writer.writerow([label, filename])
+
+    with open(os.path.join(output_dir, 'val_indices.csv'), 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['label', 'Filename'])  # header
+        for label, filename in val_files:
             writer.writerow([label, filename])
 
     with open(os.path.join(output_dir, 'test_indices.csv'), 'w', newline='') as f:
@@ -312,7 +331,7 @@ def preprocess_dataset(data_dir, output_dir, train_indices_file, use_columns=['t
     with open(os.path.join(output_dir, 'scalers.pkl'), 'wb') as f:
         pickle.dump(scalers, f)
     
-    # Second pass: transform all files (both train and test) 
+    # Second pass: transform all files (train, validation, and test) 
     # Get all files
     all_files = glob.glob(os.path.join(data_dir, 'dev*_*.csv'))
     
@@ -342,65 +361,54 @@ def preprocess_dataset(data_dir, output_dir, train_indices_file, use_columns=['t
     print(f"Preprocessing completed. Files saved to {output_dir}")
 
 
-def main():
+def prepare_data(data_dir, output_dir, val_ratio=0.15, test_ratio=0.15, seed=42):
+    """
+    Master function for data preparation
+    
+    Args:
+        data_dir (str): Directory containing CSV files
+        output_dir (str): Directory to save processed files
+        val_ratio (float): Ratio of validation data
+        test_ratio (float): Ratio of test data
+        seed (int): Random seed for reproducibility
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Step 1: Analyze the dataset
+    analysis_dir = os.path.join(output_dir, 'analysis')
+    analyze_dataset(data_dir, analysis_dir)
+    
+    # Step 2: Create train/val/test indices
+    create_indices_files(data_dir, output_dir, val_ratio, test_ratio, seed)
+    
+    # Step 3: Preprocess the dataset
+    preprocessed_dir = os.path.join(output_dir, 'preprocessed')
+    train_indices_file = os.path.join(output_dir, 'train_indices.csv')
+    
+    # If train indices file doesn't exist, raise error
+    if not os.path.exists(train_indices_file):
+        raise FileNotFoundError(f"Train indices file {train_indices_file} not found")
+    
+    # Preprocess with only q column (similar to IEGM model)
+    preprocess_dataset(data_dir, preprocessed_dir, train_indices_file, use_columns=['q'])
+    
+    print(f"Data preparation completed. Processed files saved to {output_dir}")
+
+
+if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Preprocess semiconductor device data')
     
     parser.add_argument('--data_dir', type=str, default='./dataset_3',
                         help='Directory containing CSV files')
     parser.add_argument('--output_dir', type=str, default='./preprocessed_data',
                         help='Directory to save preprocessed files')
-    parser.add_argument('--analyze', action='store_true', default=True,
-                        help='Analyze the dataset')
-    parser.add_argument('--preprocess', action='store_true', default=True,
-                        help='Preprocess the dataset')
-    parser.add_argument('--create_indices', action='store_true', default=True,
-                        help='Create train and test indices files')
+    parser.add_argument('--val_ratio', type=float, default=0.15,
+                        help='Ratio of data to use for validation')
     parser.add_argument('--test_ratio', type=float, default=0.15,
                         help='Ratio of data to use for testing')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed')
-    parser.add_argument('--use_columns', type=str, default='t,q',
-                        help='Columns to use (comma-separated)')
     
     args = parser.parse_args()
     
-    # Create output directory
-    os.makedirs(args.output_dir, exist_ok=True)
-    
-    # Parse columns to use
-    use_columns = args.use_columns.split(',')
-    
-    # Create train/test indices first
-    if args.create_indices:
-        create_indices_files(
-            args.data_dir,
-            args.output_dir,
-            args.test_ratio,
-            args.seed
-        )
-    
-    # Analyze the dataset
-    if args.analyze:
-        analysis_dir = os.path.join(args.output_dir, 'analysis')
-        analyze_dataset(args.data_dir, analysis_dir)
-    
-    # Preprocess the dataset
-    if args.preprocess:
-        preprocessed_dir = os.path.join(args.output_dir, 'preprocessed')
-        train_indices_file = os.path.join(args.output_dir, 'train_indices.csv')
-        
-        # Check if train indices file exists
-        if not os.path.exists(train_indices_file):
-            print(f"Error: Train indices file {train_indices_file} not found. Run with --create_indices first.")
-            return
-        
-        preprocess_dataset(
-            args.data_dir,
-            preprocessed_dir,
-            train_indices_file,
-            use_columns
-        )
-
-
-if __name__ == '__main__':
-    main()
+    prepare_data(args.data_dir, args.output_dir, args.val_ratio, args.test_ratio, args.seed)
