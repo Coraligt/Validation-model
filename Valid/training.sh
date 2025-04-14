@@ -1,12 +1,3 @@
-#!/bin/bash
-
-echo "Step 1: Preparing data..."
-python prepare_data.py \
-    --data_dir ./dataset_3 \
-    --output_dir ./indices \
-    --val_ratio 0.20 \
-    --test_ratio 0.10 \
-
 # 2. Train baseline model
 echo "Step 2: Training baseline model..."
 echo "Running baseline model training (TinyML contest multi-layer CNN architecture)"
