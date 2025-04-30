@@ -763,8 +763,11 @@ def main():
                        help='Disable CUDA even if available')
     
     # Data augmentation
-    parser.add_argument('--do_augmentation', action='store_true', default=True,
-                       help='Apply data augmentation during training')
+    parser.add_argument('--do_augmentation', action='store_true',
+                        help='Apply data augmentation during training')
+    parser.add_argument('--no_augmentation', action='store_false', dest='do_augmentation',
+                        help='Disable data augmentation during training')
+    parser.set_defaults(do_augmentation=False)  # Default to False
     parser.add_argument('--flip_signal', action='store_true', default=True,
                        help='Enable signal flipping augmentation')
     parser.add_argument('--add_noise', action='store_true', default=True,
@@ -781,6 +784,8 @@ def main():
     # SWA parameters
     parser.add_argument('--use_swa', action='store_true',
                        help='Enable Stochastic Weight Averaging')
+    parser.add_argument('--no_swa', action='store_false', dest='use_swa',
+                        help='Disable swa')
     parser.add_argument('--swa_start', type=int, default=10,
                        help='Epoch to start SWA from')
     parser.add_argument('--swa_freq', type=int, default=5,

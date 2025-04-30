@@ -1,0 +1,13 @@
+{
+  "run_id": 0,
+  "best_epoch": 7,
+  "best_val_acc": 95.44444444444444,
+  "best_val_fb": 0.97853,
+  "test_acc": 95.62222222222222,
+  "test_fb": 0.97956,
+  "swa_test_acc": null,
+  "swa_test_fb": null,
+  "training_time": 4758.10626578331,
+  "model_path": "./model_output/baseline/run_0/best_model_fb.pth",
+  "swa_model_path": null
+}

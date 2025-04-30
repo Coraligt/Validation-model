@@ -12,6 +12,10 @@ from scipy import interpolate
 from model import SemiconductorModel
 from utils import stats_report
 
+
+from matplotlib.gridspec import GridSpec
+import seaborn as sns
+
 def load_test_summary(summary_file):
     """
     Load test summary file containing labels and filenames
@@ -595,6 +599,141 @@ def visualize_transformation(data_dir, output_dir, sample_count=3, seq_length=10
     
     print(f"Visualizations saved to {output_dir}")
 
+def visualize_detailed_samples(data_dir, output_dir, results_df, use_scaler=None, 
+                              sample_count=5, interp_method='pv'):
+    """
+    Create detailed visualizations of original files with model predictions
+    
+    Args:
+        data_dir: Directory containing the original CSV files
+        output_dir: Directory to save visualizations
+        results_df: DataFrame with inference results
+        use_scaler: Optional scaler to transform data back to original scale
+        sample_count: Number of samples to visualize per category
+        interp_method: Interpolation method used
+    """
+    # Create output directory
+    vis_dir = os.path.join(output_dir, 'detailed_visualizations')
+    os.makedirs(vis_dir, exist_ok=True)
+    
+    # Define categories to visualize
+    categories = [
+        ('TP', (results_df['true_label'] == 1) & (results_df['prediction'] == 1)),
+        ('TN', (results_df['true_label'] == 0) & (results_df['prediction'] == 0)),
+        ('FP', (results_df['true_label'] == 0) & (results_df['prediction'] == 1)),
+        ('FN', (results_df['true_label'] == 1) & (results_df['prediction'] == 0))
+    ]
+    
+    for category_name, mask in categories:
+        subset = results_df[mask]
+        if len(subset) > 0:
+            # Take up to sample_count samples
+            for _, row in subset.head(sample_count).iterrows():
+                filename = row['filename']
+                filepath = os.path.join(data_dir, filename)
+                
+                try:
+                    # Read original CSV file
+                    df = pd.read_csv(filepath, header=None)
+                    
+                    # Assign column names if not present
+                    if len(df.columns) >= 4:
+                        df.columns = ['t', 'v', 'q', 'i'][:len(df.columns)]
+                    elif len(df.columns) == 2:
+                        df.columns = ['t', 'q']
+                    
+                    # Create detailed visualization
+                    plt.figure(figsize=(18, 12))
+                    gs = GridSpec(3, 2)
+                    
+                    # 1. Q vs T plot
+                    ax1 = plt.subplot(gs[0, 0])
+                    if 't' in df.columns and 'q' in df.columns:
+                        ax1.plot(df['t'], df['q'], 'b-', linewidth=2)
+                        ax1.set_title('Charge (Q) vs Time (T)')
+                        ax1.set_xlabel('Time')
+                        ax1.set_ylabel('Charge')
+                        ax1.grid(True, alpha=0.3)
+                    
+                    # 2. Q vs V plot (PV curve) if available
+                    ax2 = plt.subplot(gs[0, 1])
+                    if 'v' in df.columns and 'q' in df.columns:
+                        ax2.plot(df['v'], df['q'], 'r-', linewidth=2)
+                        ax2.set_title('Charge (Q) vs Voltage (V) - PV Loop')
+                        ax2.set_xlabel('Voltage')
+                        ax2.set_ylabel('Charge')
+                        ax2.grid(True, alpha=0.3)
+                    
+                    # 3. Phase plot (Q vs Q')
+                    ax3 = plt.subplot(gs[1, 0])
+                    if 'q' in df.columns and len(df['q']) > 1:
+                        ax3.plot(df['q'].values[:-1], df['q'].values[1:], 'g-')
+                        ax3.set_title('Q(t) vs Q(t+1) - Phase Plot')
+                        ax3.set_xlabel('Q(t)')
+                        ax3.set_ylabel('Q(t+1)')
+                        ax3.grid(True, alpha=0.3)
+                    
+                    # 4. Prediction and confidence
+                    ax4 = plt.subplot(gs[1, 1])
+                    ax4.bar(['Non-Leaky (0)', 'Leaky (1)'], 
+                           [1 - row['leaky_prob'], row['leaky_prob']], 
+                           color=['blue', 'red'])
+                    ax4.set_ylim(0, 1)
+                    ax4.set_title('Model Prediction')
+                    ax4.set_ylabel('Probability')
+                    ax4.grid(True, alpha=0.3)
+                    
+                    # 5. FFT of the q signal (frequency domain analysis)
+                    ax5 = plt.subplot(gs[2, 0])
+                    if 'q' in df.columns:
+                        q_values = df['q'].values
+                        # Apply FFT
+                        q_fft = np.fft.fft(q_values)
+                        freq = np.fft.fftfreq(len(q_values))
+                        # Plot only positive frequencies
+                        positive_freq_idx = freq > 0
+                        ax5.plot(freq[positive_freq_idx], np.abs(q_fft[positive_freq_idx]))
+                        ax5.set_title('Frequency Spectrum of Q Signal')
+                        ax5.set_xlabel('Frequency')
+                        ax5.set_ylabel('Magnitude')
+                        ax5.set_xscale('log')
+                        ax5.grid(True, alpha=0.3)
+                    
+                    # 6. If current (i) is available, plot I vs T
+                    ax6 = plt.subplot(gs[2, 1])
+                    if 'i' in df.columns and 't' in df.columns:
+                        ax6.plot(df['t'], df['i'], 'm-')
+                        ax6.set_title('Current (I) vs Time (T)')
+                        ax6.set_xlabel('Time')
+                        ax6.set_ylabel('Current')
+                        ax6.grid(True, alpha=0.3)
+                    else:
+                        # If no current data, show a text heatmap of correlation matrix
+                        if len(df.columns) > 1:
+                            corr = df.corr()
+                            sns.heatmap(corr, annot=True, cmap='coolwarm', ax=ax6)
+                            ax6.set_title('Correlation Matrix')
+                    
+                    # Overall title
+                    plt.suptitle(f"{category_name}: {filename}\n"
+                                f"True: {int(row['true_label'])}, "
+                                f"Pred: {int(row['prediction'])}, "
+                                f"Confidence: {row['confidence']:.4f}, "
+                                f"Original Length: {row['original_length']}", 
+                                fontsize=16)
+                    
+                    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+                    
+                    # Save visualization
+                    plt.savefig(os.path.join(vis_dir, f"{category_name}_{filename.replace('.csv', '')}.png"))
+                    plt.close()
+                    
+                except Exception as e:
+                    print(f"Error creating visualization for {filepath}: {e}")
+    
+    print(f"Detailed visualizations saved to {vis_dir}")
+
+
 def main():
     parser = argparse.ArgumentParser(description='Semiconductor Leakage Detection Inference')
     
@@ -639,6 +778,9 @@ def main():
     parser.add_argument('--visualize_transformations', action='store_true',
                     help='Visualize different data transformations')
     
+    parser.add_argument('--create_detailed_vis', action='store_true',
+                    help='Create detailed visualizations of sample files')
+    
     args = parser.parse_args()
 
     # In main() after parsing arguments
@@ -669,6 +811,17 @@ def main():
     
     # Run inference
     results_df = run_inference(args)
+
+    # Add detailed visualizations
+    if args.create_detailed_vis:
+        print("Creating detailed visualizations of samples...")
+        visualize_detailed_samples(
+            data_dir=args.data_dir,
+            output_dir=args.output_dir,
+            results_df=results_df,
+            sample_count=min(5, len(results_df)),
+            interp_method=args.interpolation
+        )
     
     print("Inference completed successfully!")
     return results_df

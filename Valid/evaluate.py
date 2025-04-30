@@ -16,6 +16,10 @@ from model import SemiconductorModel
 from dataset import get_dataloaders, get_transforms
 from utils import set_seed, stats_report, ACC, PPV, NPV, Sensitivity, Specificity, BAC, F1, FB
 
+import os
+import pandas as pd
+import seaborn as sns
+
 print("Starting evaluation script")
 
 def setup_logging(output_dir, log_file=None):
@@ -138,41 +142,246 @@ def evaluate_model(model, data_loader, criterion, device):
     
     return avg_loss, acc, cm
 
-def plot_confusion_matrix(cm, output_dir):
-    """Plot confusion matrix"""
+# Enhanced confusion matrix function (add to both files)
+def plot_confusion_matrix(cm, output_dir, filename='confusion_matrix.png'):
+    """
+    Create an enhanced visualization of confusion matrix with additional metrics
+    
+    Args:
+        cm: Confusion matrix as [TP, FN, FP, TN]
+        output_dir: Directory to save visualization
+        filename: Filename for the saved visualization
+    """
     tp, fn, fp, tn = cm
     
-    # Reshape to 2x2 matrix for visualization
+    # Calculate metrics
+    accuracy = (tp + tn) / (tp + tn + fp + fn) if (tp + tn + fp + fn) > 0 else 0
+    sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0
+    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+    npv = tn / (tn + fn) if (tn + fn) > 0 else 0
+    f1 = 2 * precision * sensitivity / (precision + sensitivity) if (precision + sensitivity) > 0 else 0
+    fbeta = (1 + 4) * (precision * sensitivity) / (4 * precision + sensitivity) if (4 * precision + sensitivity) > 0 else 0
+    
+    # Create figure
+    plt.figure(figsize=(12, 10))
+    
+    # Confusion matrix subplot
+    ax1 = plt.subplot(1, 2, 1)
     cm_matrix = np.array([[tn, fp], [fn, tp]])
+    sns.heatmap(cm_matrix, annot=True, fmt='d', cmap='Blues', 
+               xticklabels=['Non-Leaky (0)', 'Leaky (1)'],
+               yticklabels=['Non-Leaky (0)', 'Leaky (1)'], ax=ax1)
+    ax1.set_title('Confusion Matrix')
+    ax1.set_ylabel('True Label')
+    ax1.set_xlabel('Predicted Label')
     
-    plt.figure(figsize=(10, 8))
-    plt.imshow(cm_matrix, interpolation='nearest', cmap=plt.cm.Blues)
-    plt.title('Confusion Matrix')
-    plt.colorbar()
+    # Metrics subplot
+    ax2 = plt.subplot(1, 2, 2)
+    metrics = {
+        'Accuracy': accuracy,
+        'Sensitivity/Recall': sensitivity,
+        'Specificity': specificity,
+        'Precision/PPV': precision,
+        'NPV': npv,
+        'F1 Score': f1,
+        'F-β Score (β=2)': fbeta
+    }
     
-    classes = ['Non-leaky (0)', 'Leaky (1)']
-    tick_marks = np.arange(len(classes))
-    plt.xticks(tick_marks, classes, rotation=45)
-    plt.yticks(tick_marks, classes)
+    colors = plt.cm.RdYlGn(np.linspace(0.2, 0.8, len(metrics)))
+    ax2.barh(list(metrics.keys()), list(metrics.values()), color=colors)
     
-    # Add text annotations
-    fmt = 'd'
-    thresh = cm_matrix.max() / 2.
-    for i in range(cm_matrix.shape[0]):
-        for j in range(cm_matrix.shape[1]):
-            plt.text(j, i, format(cm_matrix[i, j], fmt),
-                     ha="center", va="center",
-                     color="white" if cm_matrix[i, j] > thresh else "black")
+    # Add text labels
+    for i, (metric, value) in enumerate(metrics.items()):
+        ax2.text(value + 0.01, i, f'{value:.4f}', va='center')
+    
+    ax2.set_title('Model Performance Metrics')
+    ax2.set_xlim(0, 1.1)
+    ax2.grid(axis='x', alpha=0.3)
     
     plt.tight_layout()
-    plt.ylabel('True Label')
-    plt.xlabel('Predicted Label')
-    
-    # Save the figure
-    save_path = os.path.join(output_dir, 'confusion_matrix.png')
-    plt.savefig(save_path)
+    plt.savefig(os.path.join(output_dir, filename))
     plt.close()
-    print(f"Confusion matrix saved to {save_path}")
+    
+    print(f"Confusion matrix saved to {os.path.join(output_dir, filename)}")
+
+# Add 
+def visualize_results(model, test_loader, device, output_dir):
+    """
+    Create detailed visualizations of model performance and sample predictions
+    
+    Args:
+        model: Trained model
+        test_loader: DataLoader with test data
+        device: Device to run inference on
+        output_dir: Directory to save visualizations
+    """
+    # Create visualization subdirectory
+    vis_dir = os.path.join(output_dir, 'visualizations')
+    os.makedirs(vis_dir, exist_ok=True)
+    
+    # Set model to evaluation mode
+    model.eval()
+    
+    # Initialize lists to store results
+    all_labels = []
+    all_probs = []
+    all_preds = []
+    
+    # Store some sample data for detailed visualization
+    leaky_samples = []
+    non_leaky_samples = []
+    fp_samples = []  # False positives
+    fn_samples = []  # False negatives
+    
+    # Process test data
+    with torch.no_grad():
+        for i, (inputs, labels) in enumerate(test_loader):
+            inputs, labels = inputs.to(device), labels.to(device)
+            
+            # Forward pass
+            outputs = model(inputs)
+            probs = torch.nn.functional.softmax(outputs, dim=1)
+            preds = torch.argmax(probs, dim=1)
+            
+            # Convert to numpy for easier processing
+            labels_np = labels.cpu().numpy()
+            probs_np = probs[:, 1].cpu().numpy()  # Probability of class 1 (leaky)
+            preds_np = preds.cpu().numpy()
+            
+            # Collect overall results
+            all_labels.extend(labels_np)
+            all_probs.extend(probs_np)
+            all_preds.extend(preds_np)
+            
+            # Collect example samples (limit to first few we find)
+            for j in range(len(labels_np)):
+                sample = {
+                    'input': inputs[j].cpu().numpy(),
+                    'label': labels_np[j],
+                    'pred': preds_np[j],
+                    'prob': probs_np[j]
+                }
+                
+                # Correctly classified leaky sample
+                if labels_np[j] == 1 and preds_np[j] == 1 and len(leaky_samples) < 5:
+                    leaky_samples.append(sample)
+                
+                # Correctly classified non-leaky sample
+                elif labels_np[j] == 0 and preds_np[j] == 0 and len(non_leaky_samples) < 5:
+                    non_leaky_samples.append(sample)
+                
+                # False positive (predicted leaky when it's not)
+                elif labels_np[j] == 0 and preds_np[j] == 1 and len(fp_samples) < 5:
+                    fp_samples.append(sample)
+                
+                # False negative (predicted non-leaky when it is leaky)
+                elif labels_np[j] == 1 and preds_np[j] == 0 and len(fn_samples) < 5:
+                    fn_samples.append(sample)
+    
+    # Convert to numpy arrays
+    all_labels = np.array(all_labels)
+    all_probs = np.array(all_probs)
+    all_preds = np.array(all_preds)
+    
+    # 1. Create ROC curve
+    fpr, tpr, thresholds = roc_curve(all_labels, all_probs)
+    roc_auc = auc(fpr, tpr)
+    
+    plt.figure(figsize=(10, 8))
+    plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (area = {roc_auc:.3f})')
+    plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('Receiver Operating Characteristic (ROC) Curve')
+    plt.legend(loc="lower right")
+    plt.grid(True, alpha=0.3)
+    plt.savefig(os.path.join(vis_dir, 'roc_curve.png'))
+    plt.close()
+    
+    # 2. Create Precision-Recall curve
+    precision, recall, _ = precision_recall_curve(all_labels, all_probs)
+    pr_auc = auc(recall, precision)
+    
+    plt.figure(figsize=(10, 8))
+    plt.plot(recall, precision, color='green', lw=2, 
+             label=f'Precision-Recall curve (area = {pr_auc:.3f})')
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel('Recall')
+    plt.ylabel('Precision')
+    plt.title('Precision-Recall Curve')
+    plt.legend(loc="lower left")
+    plt.grid(True, alpha=0.3)
+    plt.savefig(os.path.join(vis_dir, 'precision_recall_curve.png'))
+    plt.close()
+    
+    # 3. Create probability distribution histogram
+    plt.figure(figsize=(12, 6))
+    
+    # Separate by true label
+    leaky_probs = all_probs[all_labels == 1]
+    non_leaky_probs = all_probs[all_labels == 0]
+    
+    plt.hist(non_leaky_probs, bins=20, alpha=0.5, color='blue', label='Non-Leaky (0)')
+    plt.hist(leaky_probs, bins=20, alpha=0.5, color='red', label='Leaky (1)')
+    
+    plt.axvline(x=0.5, color='gray', linestyle='--', label='Decision Boundary')
+    plt.xlabel('Leaky Probability')
+    plt.ylabel('Count')
+    plt.title('Distribution of Predictions by True Class')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.savefig(os.path.join(vis_dir, 'probability_distribution.png'))
+    plt.close()
+    
+    # 4. Visualize sample waveforms from each category
+    def plot_sample(sample, category, sample_idx):
+        # Reshape input back to original shape
+        q_data = sample['input'][0]  # First channel (q values)
+        
+        plt.figure(figsize=(12, 8))
+        
+        # Create a dummy time array (since the actual time information is not retained)
+        t = np.arange(len(q_data))
+        
+        # Plot Q vs T
+        plt.subplot(2, 1, 1)
+        plt.plot(t, q_data, 'b-')
+        plt.title(f"{category} - True: {sample['label']}, Pred: {sample['pred']} (Prob: {sample['prob']:.4f})")
+        plt.xlabel('Time (index)')
+        plt.ylabel('Charge (Q) - Normalized')
+        plt.grid(True, alpha=0.3)
+        
+        # Plot Q changes (like a phase plot)
+        plt.subplot(2, 1, 2)
+        plt.plot(q_data[:-1], q_data[1:], 'r-')
+        plt.title('Q(t) vs Q(t+1) - Phase Plot')
+        plt.xlabel('Q(t)')
+        plt.ylabel('Q(t+1)')
+        plt.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(vis_dir, f"{category}_sample_{sample_idx}.png"))
+        plt.close()
+    
+    # Plot samples from each category
+    categories = [
+        ("True_Positive", leaky_samples),
+        ("True_Negative", non_leaky_samples),
+        ("False_Positive", fp_samples),
+        ("False_Negative", fn_samples)
+    ]
+    
+    for category_name, samples in categories:
+        for i, sample in enumerate(samples):
+            plot_sample(sample, category_name, i)
+    
+    print(f"All visualizations saved to {vis_dir}")
+    
+    return all_labels, all_probs, all_preds
 
 def main():
     print("Parsing arguments...")
@@ -373,9 +582,13 @@ def main():
         print(f"FB Score: {fb:.4f}")
         print(f"Confusion Matrix: TP={cm[0]}, FN={cm[1]}, FP={cm[2]}, TN={cm[3]}")
         
+    
         # Create visualization
         print("Creating visualization...")
         logger.info("Creating visualization...")
+        # After evaluating model
+        all_labels, all_probs, all_preds = visualize_results(model, test_loader, device, args.output_dir)
+
         plot_confusion_matrix(cm, args.output_dir)
         
         # Save results to CSV

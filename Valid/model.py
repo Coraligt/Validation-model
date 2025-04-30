@@ -146,21 +146,19 @@ class BaselineSemiconductorModel(nn.Module):
         self.conv5 = nn.Conv1d(20, 20, kernel_size=4, stride=1, padding=1)
         self.bn5 = nn.BatchNorm1d(20)
         
-        # Calculate output size after 5 conv layers with padding
-        # This will need adjustment based on exact padding and stride
-        self.output_size = seq_length
-        for _ in range(5):
-            # Approximate size change per layer
-            self.output_size = self.output_size // 1  # No change due to padding
-        
-        # Final feature size
-        self.flatten_size = 20 * self.output_size
+        # Instead of calculating the output size mathematically, we'll determine the
+        # actual size by doing a forward pass with a dummy tensor
+        with torch.no_grad():
+            dummy_input = torch.zeros(1, 1, seq_length)
+            dummy_output = self._forward_features(dummy_input)
+            self.flatten_size = dummy_output.view(1, -1).size(1)
         
         # Fully connected layers
         self.fc1 = nn.Linear(self.flatten_size, 10)
         self.fc2 = nn.Linear(10, 2)  # Binary classification
-        
-    def forward(self, x):
+    
+    def _forward_features(self, x):
+        """Extract features through convolutional layers"""
         # First conv block
         x = self.conv1(x)
         x = self.bn1(x)
@@ -185,6 +183,13 @@ class BaselineSemiconductorModel(nn.Module):
         x = self.conv5(x)
         x = self.bn5(x)
         x = F.relu(x)
+        
+        return x
+        
+    def forward(self, x):
+        """Forward pass through the entire model"""
+        # Extract features through conv layers
+        x = self._forward_features(x)
         
         # Flatten
         x = x.view(x.size(0), -1)
