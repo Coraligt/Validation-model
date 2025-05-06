@@ -5,19 +5,38 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 import pandas as pd
 
+# def load_csv_indices(csv_file):
+#     """
+#     Load CSV file with indices.
+#     Format: label, filename
+#     """
+#     file_labels = []
+#     with open(csv_file) as csvfile:
+#         csvreader = csv.reader(csvfile, delimiter=',')
+#         next(csvreader, None)  # Skip header
+#         for row in csvreader:
+#             label = int(row[0])
+#             filename = row[1]
+#             file_labels.append((filename, label))
+#     return file_labels
+
+# Change the function to load CSV file with indices for the new format
+# Format: leaky_label, voltage_label, filename
 def load_csv_indices(csv_file):
     """
-    Load CSV file with indices.
-    Format: label, filename
+    Load CSV file with indices for the new format
+    Format: leaky_label, voltage_label, filename
     """
     file_labels = []
     with open(csv_file) as csvfile:
         csvreader = csv.reader(csvfile, delimiter=',')
         next(csvreader, None)  # Skip header
         for row in csvreader:
-            label = int(row[0])
-            filename = row[1]
-            file_labels.append((filename, label))
+            if len(row) >= 3:
+                leaky_label = int(row[0])
+                voltage_label = int(row[1])
+                filename = row[2]
+                file_labels.append((filename, leaky_label, voltage_label))
     return file_labels
 
 class SemiconductorDataset(Dataset):
