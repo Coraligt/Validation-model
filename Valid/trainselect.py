@@ -807,7 +807,7 @@ def main():
     parser.add_argument('--train_baseline', action='store_true',
                        help='Train only a baseline model with no augmentation and no SWA')
     
-    # Add to the argument parser section:
+    # Add to the argument parser section
     parser.add_argument('--model_type', type=str, default='improved', 
                         choices=['baseline', 'improved'],
                         help='Model architecture to use (baseline or improved)')

@@ -32,33 +32,91 @@ def load_csv_indices(csv_file):
         csvreader = csv.reader(csvfile, delimiter=',')
         next(csvreader, None)  # Skip header
         for row in csvreader:
-            if len(row) >= 3:
-                leaky_label = int(row[0])
-                voltage_label = int(row[1])
-                filename = row[2]
-                file_labels.append((filename, leaky_label, voltage_label))
+            leaky_label = int(row[0])
+            voltage_label = int(row[1])
+            filename = row[2]
+            file_labels.append((filename, leaky_label, voltage_label))
     return file_labels
 
+
+# class SemiconductorDataset(Dataset):
+#     """
+#     Dataset for semiconductor device data, using only q values as features
+#     """
+#     def __init__(self, root_dir, indices_file, transform=None):
+#         """
+#         Args:
+#             root_dir: Directory containing CSV files
+#             indices_file: Path to indices CSV file
+#             transform: Optional transform to be applied to samples
+#         """
+#         self.root_dir = root_dir
+#         self.file_labels = load_csv_indices(indices_file)
+#         self.transform = transform
+        
+#     def __len__(self):
+#         return len(self.file_labels)
+    
+#     def __getitem__(self, idx):
+#         filename, label = self.file_labels[idx]
+#         filepath = os.path.join(self.root_dir, filename)
+        
+#         try:
+#             # Read CSV file - assume column order is t, v, q, i
+#             df = pd.read_csv(filepath, header=None)
+            
+#             # Extract q column (usually the 3rd column, index 2)
+#             q_values = df.iloc[:, 2].values
+            
+#             # Reshape to match model input format [channels, sequence_length]
+#             q_values = q_values.reshape(1, -1)
+            
+#             # Apply transform if provided
+#             if self.transform:
+#                 q_values = self.transform(q_values)
+            
+#             # Convert to tensor
+#             q_tensor = torch.FloatTensor(q_values)
+            
+#             # Make sure length is 1002
+#             seq_len = q_tensor.shape[1]
+#             if seq_len < 1002:
+#                 padding = torch.zeros(1, 1002 - seq_len)
+#                 q_tensor = torch.cat([q_tensor, padding], dim=1)
+#             elif seq_len > 1002:
+#                 q_tensor = q_tensor[:, :1002]
+            
+#             return q_tensor, torch.tensor(label, dtype=torch.long)
+        
+#         except Exception as e:
+#             print(f"Error loading {filepath}: {e}")
+#             # Return dummy tensor in case of error
+#             return torch.zeros(1, 1002), torch.tensor(label, dtype=torch.long)
+
+
+# Updated SemiconductorDataset to handle dual labels (leaky and voltage)
 class SemiconductorDataset(Dataset):
     """
-    Dataset for semiconductor device data, using only q values as features.
+    Dataset for semiconductor device data with dual labels (leaky and voltage)
     """
-    def __init__(self, root_dir, indices_file, transform=None):
+    def __init__(self, root_dir, indices_file, transform=None, use_voltage_flag=True):
         """
         Args:
             root_dir: Directory containing CSV files
             indices_file: Path to indices CSV file
             transform: Optional transform to be applied to samples
+            use_voltage_flag: Whether to include voltage flag in model training
         """
         self.root_dir = root_dir
         self.file_labels = load_csv_indices(indices_file)
         self.transform = transform
+        self.use_voltage_flag = use_voltage_flag
         
     def __len__(self):
         return len(self.file_labels)
     
     def __getitem__(self, idx):
-        filename, label = self.file_labels[idx]
+        filename, leaky_label, voltage_label = self.file_labels[idx]
         filepath = os.path.join(self.root_dir, filename)
         
         try:
@@ -86,13 +144,27 @@ class SemiconductorDataset(Dataset):
             elif seq_len > 1002:
                 q_tensor = q_tensor[:, :1002]
             
-            return q_tensor, torch.tensor(label, dtype=torch.long)
-        
+            # If using voltage flag, include it as additional feature
+            if self.use_voltage_flag:
+                # Create a combined label or return separate labels
+                # Combined into a single categorical label (4 classes)
+                # combined_label = 2 * leaky_label + voltage_label  # 0, 1, 2, 3
+                # return q_tensor, torch.tensor(combined_label, dtype=torch.long)
+
+                # Return separate labels
+                return q_tensor, torch.tensor(leaky_label, dtype=torch.long), torch.tensor(voltage_label, dtype=torch.long)
+            else:
+                # Just use the leaky label
+                return q_tensor, torch.tensor(leaky_label, dtype=torch.long)
+            
         except Exception as e:
             print(f"Error loading {filepath}: {e}")
             # Return dummy tensor in case of error
-            return torch.zeros(1, 1002), torch.tensor(label, dtype=torch.long)
-
+            if self.use_voltage_flag:
+                return torch.zeros(1, 1002), torch.tensor(leaky_label, dtype=torch.long), torch.tensor(voltage_label, dtype=torch.long)
+            else:
+                return torch.zeros(1, 1002), torch.tensor(leaky_label, dtype=torch.long)
+            
 # Data augmentation transforms
 class FlipSignal:
     """Flip signal values (multiply by -1)"""
