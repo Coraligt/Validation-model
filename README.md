@@ -129,7 +129,14 @@ Before training the model, you need to prepare your semiconductor device data:
    - Each device should have a CSV file named as `dev#_label.csv` where # is the device ID and label is 0 (non-leaky) or 1 (leaky)
    - Each CSV file should contain columns for time (t), voltage (v), charge (q), and current (i)
 
-2. Run the data preparation script:
+2. To enhance the performance of the model, we try to include the major or minor loops in the data to help the classification
+   - New data format: dev#_LeakageLabel_VoltageLabel.csv
+   - Leaky flag 0: non-leaky, 1: leaky
+   - Voltage flag 0: minor loop, 1: major loop
+
+3. In each data file, it includes 4 cols of the electrical measurements data: t, v, q, i.
+
+4. Run the data preparation script to split the data into train/valid/test indices:
 
 ```bash
 python Valid/prepare_data.py --data_dir ./Valid/dataset_3 --output_dir ./Valid/indices
