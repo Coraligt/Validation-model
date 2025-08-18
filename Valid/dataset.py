@@ -5,20 +5,88 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 import pandas as pd
 
-# def load_csv_indices(csv_file):
-#     """
-#     Load CSV file with indices.
-#     Format: label, filename
-#     """
-#     file_labels = []
-#     with open(csv_file) as csvfile:
-#         csvreader = csv.reader(csvfile, delimiter=',')
-#         next(csvreader, None)  # Skip header
-#         for row in csvreader:
-#             label = int(row[0])
-#             filename = row[1]
-#             file_labels.append((filename, label))
-#     return file_labels
+
+def load_dual_label_indices(csv_file):
+    """
+    Load CSV file with dual label indices.
+    Format: leaky_label, voltage_label, filename
+    """
+    file_data = []
+    with open(csv_file) as csvfile:
+        csvreader = csv.reader(csvfile, delimiter=',')
+        next(csvreader, None)  # Skip header
+        for row in csvreader:
+            leaky_label = int(row[0])
+            voltage_label = int(row[1])
+            filename = row[2]
+            file_data.append((filename, leaky_label, voltage_label))
+    return file_data
+
+class DualLabelSemiconductorDataset(Dataset):
+    """
+    Dataset for semiconductor device data with dual labels (leaky and voltage).
+    """
+    def __init__(self, root_dir, indices_file, transform=None, return_voltage=True):
+        """
+        Args:
+            root_dir: Directory containing CSV files
+            indices_file: Path to indices CSV file with dual labels
+            transform: Optional transform to be applied to samples
+            return_voltage: Whether to return voltage label
+        """
+        self.root_dir = root_dir
+        self.file_data = load_dual_label_indices(indices_file)
+        self.transform = transform
+        self.return_voltage = return_voltage
+        
+    def __len__(self):
+        return len(self.file_data)
+    
+    def __getitem__(self, idx):
+        filename, leaky_label, voltage_label = self.file_data[idx]
+        filepath = os.path.join(self.root_dir, filename)
+        
+        try:
+            # Read CSV file
+            df = pd.read_csv(filepath, header=None)
+            
+            # Extract q column (charge - 3rd column)
+            q_values = df.iloc[:, 2].values if len(df.columns) > 2 else df.iloc[:, 0].values
+            
+            # Optional: Also extract voltage for PV loop analysis
+            v_values = df.iloc[:, 1].values if len(df.columns) > 1 else None
+            
+            # Reshape to match model input format [channels, sequence_length]
+            q_values = q_values.reshape(1, -1)
+            
+            # Apply transform if provided
+            if self.transform:
+                q_values = self.transform(q_values)
+            
+            # Convert to tensor
+            q_tensor = torch.FloatTensor(q_values)
+            
+            # Ensure correct sequence length (1002)
+            seq_len = q_tensor.shape[1]
+            if seq_len < 1002:
+                padding = torch.zeros(1, 1002 - seq_len)
+                q_tensor = torch.cat([q_tensor, padding], dim=1)
+            elif seq_len > 1002:
+                q_tensor = q_tensor[:, :1002]
+            
+            if self.return_voltage:
+                return q_tensor, torch.tensor(leaky_label, dtype=torch.long), torch.tensor(voltage_label, dtype=torch.long)
+            else:
+                return q_tensor, torch.tensor(leaky_label, dtype=torch.long)
+        
+        except Exception as e:
+            print(f"Error loading {filepath}: {e}")
+            # Return dummy tensors in case of error
+            if self.return_voltage:
+                return torch.zeros(1, 1002), torch.tensor(leaky_label, dtype=torch.long), torch.tensor(voltage_label, dtype=torch.long)
+            else:
+                return torch.zeros(1, 1002), torch.tensor(leaky_label, dtype=torch.long)
+            
 
 # Change the function to load CSV file with indices for the new format
 # Format: leaky_label, voltage_label, filename

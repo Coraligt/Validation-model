@@ -14,11 +14,300 @@ import numpy as np
 from datetime import datetime
 import matplotlib.pyplot as plt
 
-from model import SemiconductorModel, BaselineSemiconductorModel, count_parameters, save_for_inference
-from dataset import get_dataloaders, get_transforms
+from model import SemiconductorModel, BaselineSemiconductorModel, DualLabelSemiconductorModel, MultiTaskSemiconductorModel, count_parameters, save_for_inference
+from dataset import get_dataloaders, get_transforms, SemiconductorDataset, DualLabelSemiconductorDataset
 from utils import set_seed, stats_report
 from swa import SWA
 from cosine_annealing import CosineAnnealingLR
+
+def train_dual_label_model(args):
+    """
+    Training function for dual-label model with voltage information
+    """
+    # Setup logging
+    logger = setup_logging(args.output_dir)
+    logger.info("Starting dual-label model training")
+    
+    # Set device
+    device = torch.device(args.device if torch.cuda.is_available() and not args.no_cuda else "cpu")
+    logger.info(f"Using device: {device}")
+    
+    # Set seed for reproducibility
+    set_seed(args.seed)
+    
+    # Create data loaders with dual labels
+    train_dataset = DualLabelSemiconductorDataset(
+        root_dir=args.data_dir,
+        indices_file=os.path.join(args.indices_dir, 'train_indices.csv'),
+        transform=get_transforms()['train'] if args.do_augmentation else None,
+        return_voltage=True
+    )
+    
+    val_dataset = DualLabelSemiconductorDataset(
+        root_dir=args.data_dir,
+        indices_file=os.path.join(args.indices_dir, 'val_indices.csv'),
+        transform=None,
+        return_voltage=True
+    )
+    
+    test_dataset = DualLabelSemiconductorDataset(
+        root_dir=args.data_dir,
+        indices_file=os.path.join(args.indices_dir, 'test_indices.csv'),
+        transform=None,
+        return_voltage=True
+    )
+    
+    # Create data loaders
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, 
+                            num_workers=args.workers, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False,
+                          num_workers=args.workers, pin_memory=True)
+    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False,
+                           num_workers=args.workers, pin_memory=True)
+    
+    logger.info(f"Dataset sizes - Train: {len(train_dataset)}, Val: {len(val_dataset)}, Test: {len(test_dataset)}")
+    
+    # Create model based on selected architecture
+    if args.model_architecture == 'dual_label':
+        model = DualLabelSemiconductorModel(
+            seq_length=args.seq_length,
+            conv_filters=args.conv_filters,
+            fc1_size=args.fc1_size,
+            fc2_size=args.fc2_size,
+            dropout1=args.dropout1,
+            dropout2=args.dropout2,
+            use_voltage_embedding=True
+        ).to(device)
+        logger.info("Using dual-label model with voltage embedding")
+    elif args.model_architecture == 'multitask':
+        model = MultiTaskSemiconductorModel(
+            seq_length=args.seq_length,
+            conv_filters=args.conv_filters,
+            fc1_size=args.fc1_size,
+            fc2_size=args.fc2_size,
+            dropout1=args.dropout1,
+            dropout2=args.dropout2
+        ).to(device)
+        logger.info("Using multi-task learning model")
+    else:
+        # Use original model
+        model = SemiconductorModel(
+            seq_length=args.seq_length,
+            conv_filters=args.conv_filters,
+            fc1_size=args.fc1_size,
+            fc2_size=args.fc2_size,
+            dropout1=args.dropout1,
+            dropout2=args.dropout2
+        ).to(device)
+        logger.info("Using original model (voltage info ignored)")
+    
+    logger.info(f"Model parameters: {count_parameters(model):,}")
+    
+    # Optimizer and scheduler
+    optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
+    scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_max=args.learning_rate, 
+                                 eta_min=args.learning_rate * 0.01)
+    
+    # Loss functions
+    if args.model_architecture == 'multitask':
+        criterion_leaky = nn.CrossEntropyLoss()
+        criterion_voltage = nn.CrossEntropyLoss()
+        # Weight for multi-task loss
+        alpha = 0.7  # Weight for leakage task (primary)
+        beta = 0.3   # Weight for voltage task (auxiliary)
+    else:
+        criterion = nn.CrossEntropyLoss()
+    
+    # Training loop
+    best_val_fb = 0.0
+    best_epoch = 0
+    
+    for epoch in range(args.epochs):
+        # Training phase
+        model.train()
+        train_loss = 0.0
+        train_correct = 0
+        train_total = 0
+        
+        for batch_idx, batch_data in enumerate(tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs}")):
+            if args.model_architecture == 'multitask':
+                inputs, leaky_labels, voltage_labels = batch_data
+                inputs = inputs.to(device)
+                leaky_labels = leaky_labels.to(device)
+                voltage_labels = voltage_labels.to(device)
+                
+                optimizer.zero_grad()
+                
+                # Forward pass
+                leaky_output, voltage_output = model(inputs)
+                
+                # Calculate losses
+                loss_leaky = criterion_leaky(leaky_output, leaky_labels)
+                loss_voltage = criterion_voltage(voltage_output, voltage_labels)
+                loss = alpha * loss_leaky + beta * loss_voltage
+                
+                # Backward pass
+                loss.backward()
+                optimizer.step()
+                
+                train_loss += loss.item()
+                
+                # Calculate accuracy for leakage detection
+                _, predicted = torch.max(leaky_output, 1)
+                train_total += leaky_labels.size(0)
+                train_correct += (predicted == leaky_labels).sum().item()
+                
+            elif args.model_architecture == 'dual_label':
+                inputs, leaky_labels, voltage_labels = batch_data
+                inputs = inputs.to(device)
+                leaky_labels = leaky_labels.to(device)
+                voltage_labels = voltage_labels.to(device)
+                
+                optimizer.zero_grad()
+                
+                # Forward pass with voltage information
+                outputs = model(inputs, voltage_labels)
+                loss = criterion(outputs, leaky_labels)
+                
+                # Backward pass
+                loss.backward()
+                optimizer.step()
+                
+                train_loss += loss.item()
+                
+                # Calculate accuracy
+                _, predicted = torch.max(outputs, 1)
+                train_total += leaky_labels.size(0)
+                train_correct += (predicted == leaky_labels).sum().item()
+            else:
+                # Original model - ignore voltage labels
+                inputs, leaky_labels, _ = batch_data
+                inputs = inputs.to(device)
+                leaky_labels = leaky_labels.to(device)
+                
+                optimizer.zero_grad()
+                
+                outputs = model(inputs)
+                loss = criterion(outputs, leaky_labels)
+                
+                loss.backward()
+                optimizer.step()
+                
+                train_loss += loss.item()
+                
+                _, predicted = torch.max(outputs, 1)
+                train_total += leaky_labels.size(0)
+                train_correct += (predicted == leaky_labels).sum().item()
+        
+        # Update learning rate
+        scheduler.step()
+        
+        # Calculate training metrics
+        train_loss = train_loss / len(train_loader)
+        train_acc = 100.0 * train_correct / train_total
+        
+        # Validation phase
+        val_loss, val_acc, val_cm = evaluate_dual_label_model(
+            model, val_loader, device, args.model_architecture
+        )
+        val_fb = stats_report(val_cm)
+        
+        # Log metrics
+        logger.info(f"Epoch {epoch+1}/{args.epochs}:")
+        logger.info(f"  Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%")
+        logger.info(f"  Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%, Val FB: {val_fb:.4f}")
+        
+        # Save best model
+        if val_fb > best_val_fb:
+            best_val_fb = val_fb
+            best_epoch = epoch + 1
+            torch.save(model.state_dict(), os.path.join(args.output_dir, 'best_model.pth'))
+            logger.info(f"  Saved new best model (FB: {best_val_fb:.4f})")
+    
+    # Test evaluation
+    logger.info("\nEvaluating on test set...")
+    model.load_state_dict(torch.load(os.path.join(args.output_dir, 'best_model.pth')))
+    test_loss, test_acc, test_cm = evaluate_dual_label_model(
+        model, test_loader, device, args.model_architecture
+    )
+    test_fb = stats_report(test_cm)
+    
+    logger.info(f"Test Results:")
+    logger.info(f"  Test Loss: {test_loss:.4f}")
+    logger.info(f"  Test Acc: {test_acc:.2f}%")
+    logger.info(f"  Test FB Score: {test_fb:.4f}")
+    logger.info(f"  Test Confusion Matrix: TP={test_cm[0]}, FN={test_cm[1]}, FP={test_cm[2]}, TN={test_cm[3]}")
+    
+    return test_fb
+
+def evaluate_dual_label_model(model, data_loader, device, model_architecture):
+    """
+    Evaluation function for dual-label models
+    """
+    model.eval()
+    total_loss = 0.0
+    correct = 0
+    total = 0
+    
+    # Confusion matrix counters
+    tp, tn, fp, fn = 0, 0, 0, 0
+    
+    criterion = nn.CrossEntropyLoss()
+    
+    with torch.no_grad():
+        for batch_data in data_loader:
+            if model_architecture == 'multitask':
+                inputs, leaky_labels, voltage_labels = batch_data
+                inputs = inputs.to(device)
+                leaky_labels = leaky_labels.to(device)
+                voltage_labels = voltage_labels.to(device)
+                
+                leaky_output, voltage_output = model(inputs)
+                loss = criterion(leaky_output, leaky_labels)
+                
+                _, predicted = torch.max(leaky_output, 1)
+                
+            elif model_architecture == 'dual_label':
+                inputs, leaky_labels, voltage_labels = batch_data
+                inputs = inputs.to(device)
+                leaky_labels = leaky_labels.to(device)
+                voltage_labels = voltage_labels.to(device)
+                
+                outputs = model(inputs, voltage_labels)
+                loss = criterion(outputs, leaky_labels)
+                
+                _, predicted = torch.max(outputs, 1)
+                
+            else:
+                inputs, leaky_labels, _ = batch_data
+                inputs = inputs.to(device)
+                leaky_labels = leaky_labels.to(device)
+                
+                outputs = model(inputs)
+                loss = criterion(outputs, leaky_labels)
+                
+                _, predicted = torch.max(outputs, 1)
+            
+            total_loss += loss.item()
+            total += leaky_labels.size(0)
+            correct += (predicted == leaky_labels).sum().item()
+            
+            # Update confusion matrix
+            for pred, true_label in zip(predicted, leaky_labels):
+                if true_label == 1 and pred == 1:
+                    tp += 1
+                elif true_label == 0 and pred == 0:
+                    tn += 1
+                elif true_label == 0 and pred == 1:
+                    fp += 1
+                elif true_label == 1 and pred == 0:
+                    fn += 1
+    
+    avg_loss = total_loss / len(data_loader)
+    accuracy = 100.0 * correct / total
+    cm = [tp, fn, fp, tn]
+    
+    return avg_loss, accuracy, cm
 
 def setup_logging(output_dir, log_file=None, run_id=None):
     """Setup logging configuration"""

@@ -171,123 +171,6 @@ def analyze_dataset(data_dir, output_dir):
     print(f"Analysis completed. Results saved to {output_dir}")
 
 
-# def create_indices_files(data_dir, output_dir, val_ratio=0.15, test_ratio=0.15, random_state=42):
-#     """
-#     Create indices files for training, validation and testing
-    
-#     Args:
-#         data_dir (str): Directory containing CSV files
-#         output_dir (str): Directory to save indices files
-#         val_ratio (float): Ratio of validation data
-#         test_ratio (float): Ratio of test data
-#         random_state (int): Random seed for reproducibility
-#     """
-#     os.makedirs(output_dir, exist_ok=True)
-    
-#     print(f"Creating indices files in {data_dir}...")
-
-#     # pattern = re.compile(r'dev(\d+)_(\d)\.csv')  # dev#_label.csv
-
-#     # Update for new file format dev#_leaky_voltage.csv
-#     pattern = re.compile(r'dev(\d+)_(\d)_(\d)\.csv')
-    
-#     # Set random seed 
-#     np.random.seed(random_state)
-    
-#     # files_info = []
-#     # file_paths = glob.glob(os.path.join(data_dir, 'dev*_*.csv'))
-
-#     # Get all device files
-#     files_info = []
-#     file_paths = glob.glob(os.path.join(data_dir, 'dev*_*_*.csv'))
-
-#     for filepath in file_paths:
-#         filename = os.path.basename(filepath)
-#         match = pattern.match(filename)
-#         if match:
-#             # device_id = int(match.group(1))
-#             # label = int(match.group(2))
-#             # files_info.append((filename, device_id, label))
-#             device_id = int(match.group(1))
-#             leaky_label = int(match.group(2))
-#             voltage_label = int(match.group(3))
-#             files_info.append((filename, device_id, leaky_label, voltage_label))
-
-#     # Group by device_id to ensure all files for a device are in the same set
-#     devices = {}
-#     # for filename, device_id, label in files_info:
-#     #     if device_id not in devices:
-#     #         devices[device_id] = []
-#     #     devices[device_id].append((filename, label))
-#     for filename, device_id, leaky_label, voltage_label in files_info:
-#         if device_id not in devices:
-#             devices[device_id] = []
-#         devices[device_id].append((filename, leaky_label, voltage_label))
-
-#     # Split into train, validation and test sets
-#     device_ids = list(devices.keys())
-#     np.random.shuffle(device_ids)
-    
-#     test_size = int(len(device_ids) * test_ratio)
-#     val_size = int(len(device_ids) * val_ratio)
-    
-#     test_device_ids = device_ids[:test_size]
-#     val_device_ids = device_ids[test_size:test_size+val_size]
-#     train_device_ids = device_ids[test_size+val_size:]
-
-#     # Create indices files
-#     train_files = []
-#     val_files = []
-#     test_files = []
-
-#     for device_id in train_device_ids:
-#         for filename, label in devices[device_id]:
-#             train_files.append((label, filename))
-
-#     for device_id in val_device_ids:
-#         for filename, label in devices[device_id]:
-#             val_files.append((label, filename))
-
-#     for device_id in test_device_ids:
-#         for filename, label in devices[device_id]:
-#             test_files.append((label, filename))
-
-#     train_labels = [label for label, _ in train_files]
-#     val_labels = [label for label, _ in val_files]
-#     test_labels = [label for label, _ in test_files]
-
-#     train_counter = Counter(train_labels)
-#     val_counter = Counter(val_labels)
-#     test_counter = Counter(test_labels)
-
-#     print(f"Train set size: {len(train_files)} files from {len(train_device_ids)} devices")
-#     print(f"Validation set size: {len(val_files)} files from {len(val_device_ids)} devices")
-#     print(f"Test set size: {len(test_files)} files from {len(test_device_ids)} devices")
-
-#     print(f"Train set: {train_counter[0]} non-leaky, {train_counter[1]} leaky")
-#     print(f"Validation set: {val_counter[0]} non-leaky, {val_counter[1]} leaky")
-#     print(f"Test set: {test_counter[0]} non-leaky, {test_counter[1]} leaky")
-
-#     # Write indices to files
-#     with open(os.path.join(output_dir, 'train_indices.csv'), 'w', newline='') as f:
-#         writer = csv.writer(f)
-#         writer.writerow(['label', 'Filename'])  # header
-#         for label, filename in train_files:
-#             writer.writerow([label, filename])
-
-#     with open(os.path.join(output_dir, 'val_indices.csv'), 'w', newline='') as f:
-#         writer = csv.writer(f)
-#         writer.writerow(['label', 'Filename'])  # header
-#         for label, filename in val_files:
-#             writer.writerow([label, filename])
-
-#     with open(os.path.join(output_dir, 'test_indices.csv'), 'w', newline='') as f:
-#         writer = csv.writer(f)
-#         writer.writerow(['label', 'Filename']) 
-#         for label, filename in test_files:
-#             writer.writerow([label, filename])  
-    
-#     print(f"Indices files created in {output_dir}")
 
 def create_indices_files(data_dir, output_dir, val_ratio=0.15, test_ratio=0.15, random_state=42):
     """
@@ -866,6 +749,132 @@ def prepare_test_data(real_data_dir, output_dir, scaler_path=None, summary_file=
     
     # Return preprocessed directory path for convenience
     return preprocessed_dir
+
+def parse_new_filename_format(filename):
+    """
+    Parse the new filename format: dev#_leakyLabel_voltageLabel.csv
+    
+    Args:
+        filename (str): Filename to parse
+    
+    Returns:
+        tuple: (device_id, leaky_label, voltage_label) or None if parsing fails
+    """
+    import re
+    # Pattern for dev#_leakyLabel_voltageLabel.csv
+    pattern = re.compile(r'dev(\d+)_(\d)_(\d)\.csv')
+    match = pattern.match(filename)
+    
+    if match:
+        device_id = int(match.group(1))
+        leaky_label = int(match.group(2))  # 0: non-leaky, 1: leaky
+        voltage_label = int(match.group(3))  # 0: minor loop, 1: major loop
+        return device_id, leaky_label, voltage_label
+    return None
+
+def create_indices_with_dual_labels(data_dir, output_dir, val_ratio=0.15, test_ratio=0.15, random_state=42):
+    """
+    Create indices files with dual labels (leaky and voltage)
+    Ensures balanced distribution across both label dimensions
+    """
+    import glob
+    import numpy as np
+    import csv
+    from collections import defaultdict
+    
+    os.makedirs(output_dir, exist_ok=True)
+    
+    print(f"Creating dual-label indices from {data_dir}...")
+    
+    # Set random seed
+    np.random.seed(random_state)
+    
+    # Collect all files with their labels
+    all_files = glob.glob(os.path.join(data_dir, 'dev*_*_*.csv'))
+    
+    # Group files by device to ensure device-wise splitting
+    device_groups = defaultdict(list)
+    label_distribution = defaultdict(int)
+    
+    for filepath in all_files:
+        filename = os.path.basename(filepath)
+        parsed = parse_new_filename_format(filename)
+        
+        if parsed:
+            device_id, leaky_label, voltage_label = parsed
+            device_groups[device_id].append((filename, leaky_label, voltage_label))
+            label_distribution[(leaky_label, voltage_label)] += 1
+    
+    # Print label distribution
+    print("\nLabel distribution in dataset:")
+    for (leaky, voltage), count in sorted(label_distribution.items()):
+        leaky_str = "Leaky" if leaky else "Non-leaky"
+        voltage_str = "Major" if voltage else "Minor"
+        print(f"  {leaky_str}, {voltage_str} loop: {count} files")
+    
+    # Split devices into train, val, test
+    all_devices = list(device_groups.keys())
+    np.random.shuffle(all_devices)
+    
+    n_devices = len(all_devices)
+    n_test = int(n_devices * test_ratio)
+    n_val = int(n_devices * val_ratio)
+    
+    test_devices = all_devices[:n_test]
+    val_devices = all_devices[n_test:n_test + n_val]
+    train_devices = all_devices[n_test + n_val:]
+    
+    # Collect files for each split
+    train_files = []
+    val_files = []
+    test_files = []
+    
+    for device_id in train_devices:
+        train_files.extend(device_groups[device_id])
+    
+    for device_id in val_devices:
+        val_files.extend(device_groups[device_id])
+    
+    for device_id in test_devices:
+        test_files.extend(device_groups[device_id])
+    
+    # Shuffle files within each split
+    np.random.shuffle(train_files)
+    np.random.shuffle(val_files)
+    np.random.shuffle(test_files)
+    
+    # Write indices files with dual labels
+    def write_dual_label_indices(filepath, files_list):
+        with open(filepath, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['leaky_label', 'voltage_label', 'filename'])
+            for filename, leaky, voltage in files_list:
+                writer.writerow([leaky, voltage, filename])
+    
+    write_dual_label_indices(os.path.join(output_dir, 'train_indices.csv'), train_files)
+    write_dual_label_indices(os.path.join(output_dir, 'val_indices.csv'), val_files)
+    write_dual_label_indices(os.path.join(output_dir, 'test_indices.csv'), test_files)
+    
+    # Print split statistics
+    print(f"\nDataset split:")
+    print(f"  Train: {len(train_files)} files from {len(train_devices)} devices")
+    print(f"  Val: {len(val_files)} files from {len(val_devices)} devices")
+    print(f"  Test: {len(test_files)} files from {len(test_devices)} devices")
+    
+    # Print label distribution for each split
+    for split_name, split_files in [("Train", train_files), ("Val", val_files), ("Test", test_files)]:
+        split_dist = defaultdict(int)
+        for _, leaky, voltage in split_files:
+            split_dist[(leaky, voltage)] += 1
+        
+        print(f"\n{split_name} set label distribution:")
+        for (leaky, voltage), count in sorted(split_dist.items()):
+            leaky_str = "Leaky" if leaky else "Non-leaky"
+            voltage_str = "Major" if voltage else "Minor"
+            percentage = 100 * count / len(split_files)
+            print(f"  {leaky_str}, {voltage_str}: {count} ({percentage:.1f}%)")
+    
+    print(f"\nIndices files created in {output_dir}")
 
 
 if __name__ == '__main__':
